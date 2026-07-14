@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { AcademicData, Assignment, CalendarEvent, Course, Grade, Note, StudySession, Subtask } from "./types";
+import type { AcademicData, Assignment, CalendarEvent, Course, Grade, Note, StudySession, Subtask, Task } from "./types";
 
 const globalForDb = globalThis as unknown as { almaDb?: Database.Database };
 
@@ -75,6 +75,19 @@ function migrate(db: Database.Database) {
       status TEXT NOT NULL DEFAULT 'pending',
       position INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      course_id TEXT REFERENCES courses(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      due_at TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      priority TEXT NOT NULL DEFAULT 'medium',
+      estimated_minutes INTEGER NOT NULL DEFAULT 30,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE TABLE IF NOT EXISTS notes (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -130,6 +143,7 @@ function migrate(db: Database.Database) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS assignments_user_due_idx ON assignments(user_id, due_at);
+    CREATE INDEX IF NOT EXISTS tasks_user_due_idx ON tasks(user_id, due_at);
     CREATE INDEX IF NOT EXISTS notes_user_updated_idx ON notes(user_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS sessions_user_start_idx ON study_sessions(user_id, start_at);
   `);
@@ -204,11 +218,12 @@ export function getAcademicData(userId = "local-student"): AcademicData {
   assignments.forEach((assignment) => { assignment.subtasks = subtasks.filter((subtask) => subtask.assignmentId === assignment.id); });
   const noteRows = rows<Omit<Note,"tags"|"pinned"> & {tags:string;pinned:number}>(db,"SELECT id,course_id as courseId,title,content,tags,pinned,created_at as createdAt,updated_at as updatedAt FROM notes WHERE user_id=? ORDER BY pinned DESC, updated_at DESC",userId);
   const notes = noteRows.map((note) => ({...note,tags:JSON.parse(note.tags || "[]"),pinned:Boolean(note.pinned)}));
+  const tasks = rows<Task>(db,"SELECT id,course_id as courseId,title,description,due_at as dueAt,status,priority,estimated_minutes as estimatedMinutes,created_at as createdAt,updated_at as updatedAt FROM tasks WHERE user_id=? ORDER BY status, due_at IS NULL, due_at, created_at DESC",userId);
   const grades = rows<Grade>(db,"SELECT id,course_id as courseId,title,score,max_score as maxScore,weight FROM grades WHERE user_id=?",userId);
   const eventRows = rows<Omit<CalendarEvent,"locked"> & {locked:number}>(db,"SELECT id,course_id as courseId,assignment_id as assignmentId,title,start_at as startAt,end_at as endAt,type,locked FROM calendar_events WHERE user_id=? ORDER BY start_at",userId);
   const events = eventRows.map((event) => ({...event,locked:Boolean(event.locked)}));
   const studySessions = rows<StudySession>(db,"SELECT id,assignment_id as assignmentId,subtask_id as subtaskId,title,start_at as startAt,end_at as endAt,status,plan_id as planId FROM study_sessions WHERE user_id=? ORDER BY start_at",userId);
-  return { semesters: semesters as AcademicData["semesters"], courses, assignments, notes, grades, events, studySessions, aiConfigured:false };
+  return { semesters: semesters as AcademicData["semesters"], courses, assignments, tasks, notes, grades, events, studySessions, aiConfigured:false };
 }
 
 export function userIdFromRequest(request: Request) {

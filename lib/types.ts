@@ -32,6 +32,19 @@ export type Subtask = {
   position: number;
 };
 
+export type Task = {
+  id: string;
+  courseId: string | null;
+  title: string;
+  description: string;
+  dueAt: string | null;
+  status: "pending" | "completed";
+  priority: "low" | "medium" | "high";
+  estimatedMinutes: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Note = {
   id: string;
   courseId: string | null;
@@ -78,6 +91,7 @@ export type AcademicData = {
   semesters: Array<{ id: string; name: string; number: number; startDate: string; endDate: string }>;
   courses: Course[];
   assignments: Assignment[];
+  tasks: Task[];
   notes: Note[];
   grades: Grade[];
   events: CalendarEvent[];

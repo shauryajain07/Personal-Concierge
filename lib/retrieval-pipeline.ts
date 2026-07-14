@@ -26,6 +26,7 @@ export async function planAcademicRetrieval({
   forcedIntent,
   plannerCall,
   codexSessionId = null,
+  fastPath = false,
 }: {
   userId: string;
   latestMessage: string;
@@ -34,6 +35,7 @@ export async function planAcademicRetrieval({
   forcedIntent?: RetrievalIntent;
   plannerCall?: RetrievalPlannerCall;
   codexSessionId?: string | null;
+  fastPath?: boolean;
 }) {
   const { index, timezone } = getCompactAcademicIndex(userId, now);
   const plannerHistory = selectRetrievalPlannerHistory(history, latestMessage);
@@ -41,7 +43,9 @@ export async function planAcademicRetrieval({
   let rawPlan: RetrievalPlan | null = null;
   let usedFallback = false;
 
-  try {
+  if (fastPath) {
+    rawPlan = fallback();
+  } else try {
     const input: RetrievalPlannerInput = {
       schema: retrievalPlanSchema,
       system: [
@@ -68,7 +72,7 @@ export async function planAcademicRetrieval({
 
   if (!rawPlan) {
     rawPlan = fallback();
-    usedFallback = true;
+    usedFallback = !fastPath;
   }
   if (forcedIntent) rawPlan = { ...rawPlan, intent: forcedIntent };
   const plan = sanitizeRetrievalPlan(rawPlan, index, now, plannerHistory.length);

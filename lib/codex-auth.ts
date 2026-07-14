@@ -112,7 +112,7 @@ function updateLoginOutput(sessionId: string, chunk: Buffer) {
   const active = logins.get(sessionId);
   if (!active) return;
   active.output = `${active.output}${chunk.toString("utf8")}`.slice(-12_000);
-  const url = active.output.match(/https:\/\/auth\.openai\.com\/codex\/device/)?.[0];
+  const url = active.output.match(/https:\/\/auth\.openai\.com\/(?:oauth\/authorize|codex\/device)[^\s\r\n]*/)?.[0];
   const code = active.output.match(/\b[A-Z0-9]{4}-[A-Z0-9]{5}\b/)?.[0];
   if (url && code) {
     active.status = {
@@ -121,6 +121,14 @@ function updateLoginOutput(sessionId: string, chunk: Buffer) {
       verificationUrl: url,
       userCode: code,
       message: "Open the verification page and enter this one-time code.",
+      model: almaCodexModel(),
+    };
+  } else if (url) {
+    active.status = {
+      status: "pending",
+      connected: false,
+      verificationUrl: url,
+      message: "Complete ChatGPT sign-in in the browser window.",
       model: almaCodexModel(),
     };
   }
@@ -132,9 +140,7 @@ export async function startCodexDeviceLogin(sessionId: string): Promise<CodexSes
   if (existing.connected || existing.status === "pending") return existing;
 
   const environment = codexEnvironment(sessionId);
-  const command = process.platform === "darwin"
-    ? { program: "/usr/bin/expect", args: ["-c", "set timeout 30; spawn codex login --device-auth; expect -re {https://auth\\.openai\\.com/codex/device}; expect -re {([A-Z0-9]{4}-[A-Z0-9]{5})}; puts ALMA_DEVICE_CODE:$expect_out(1,string); flush stdout; set timeout -1; expect eof"] }
-    : { program: "script", args: ["-q", "-c", "codex login --device-auth", "/dev/null"] };
+  const command = { program: "codex", args: ["login"] };
   const child = spawn(command.program, command.args, {
     env: environment,
     stdio: ["pipe", "pipe", "pipe"],
@@ -145,19 +151,30 @@ export async function startCodexDeviceLogin(sessionId: string): Promise<CodexSes
     message: "Starting ChatGPT sign-in…",
     model: almaCodexModel(),
   };
-  logins.set(sessionId, { child, status: initial, output: "https://auth.openai.com/codex/device\n" });
+  logins.set(sessionId, { child, status: initial, output: "" });
   child.stdout.on("data", (chunk: Buffer) => updateLoginOutput(sessionId, chunk));
   child.stderr.on("data", (chunk: Buffer) => updateLoginOutput(sessionId, chunk));
   child.on("error", (error) => {
     const active = logins.get(sessionId);
     if (active) active.status = { status: "error", connected: false, message: error.message, model: almaCodexModel() };
   });
-  child.on("exit", (code) => {
+  child.on("exit", async () => {
     const active = logins.get(sessionId);
     if (!active) return;
-    active.status = code === 0
-      ? { status: "connected", connected: true, message: "Connected to your ChatGPT account", model: almaCodexModel() }
-      : { status: "error", connected: false, message: "ChatGPT sign-in was cancelled or expired.", model: almaCodexModel() };
+    const persisted = await persistedStatus(sessionId);
+    if (persisted.connected) {
+      active.status = persisted;
+      return;
+    }
+    const rateLimited = /429|too many requests/i.test(active.output);
+    active.status = {
+      status: "error",
+      connected: false,
+      message: rateLimited
+        ? "OpenAI temporarily rate-limited ChatGPT login. Wait a minute, then try again."
+        : "ChatGPT login did not complete. Please try again.",
+      model: almaCodexModel(),
+    };
   });
   const expiry = setTimeout(() => {
     const active = logins.get(sessionId);
@@ -166,7 +183,10 @@ export async function startCodexDeviceLogin(sessionId: string): Promise<CodexSes
   expiry.unref();
 
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 4_000) {
+  // Device-code requests can take several seconds to complete on a cold CLI start.
+  // Keep the initial request open long enough to return the URL/code directly;
+  // subsequent UI polling still handles slower responses.
+  while (Date.now() - startedAt < 20_000) {
     const state = logins.get(sessionId)?.status || initial;
     if (state.userCode || state.status === "error") return state;
     await new Promise((resolve) => setTimeout(resolve, 50));

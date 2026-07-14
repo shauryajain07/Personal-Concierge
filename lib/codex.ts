@@ -31,10 +31,9 @@ export async function codexJson<T>({
   images?: string[];
   sessionId: string | null;
 }): Promise<T | null> {
-  const auth = await getCodexAuthStatus(sessionId);
-  if (!auth.connected) return null;
+  if (!sessionId) throw new Error("ChatGPT login is required before calling Codex.");
 
-  const codex = new Codex({ env: codexEnvironment(sessionId!) });
+  const codex = new Codex({ env: codexEnvironment(sessionId) });
   const thread = codex.startThread({
     model: almaCodexModel(),
     workingDirectory: process.cwd(),
@@ -133,5 +132,46 @@ export const academicAnswerSchema: JsonSchema = {
     earliestStartHour: { type: ["integer", "null"], minimum: 6, maximum: 12 },
     latestEndHour: { type: ["integer", "null"], minimum: 14, maximum: 23 },
     preferredSessionMinutes: { type: ["integer", "null"], minimum: 30, maximum: 120 },
+  },
+};
+
+const nullableString = { type: ["string", "null"] };
+const nullableInteger = { type: ["integer", "null"] };
+
+export const workspaceActionSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["message", "needsClarification", "actions"],
+  properties: {
+    message: { type: "string" },
+    needsClarification: { type: "boolean" },
+    actions: {
+      type: "array",
+      maxItems: 10,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "targetId", "courseId", "title", "description", "dueAt", "startAt", "endAt", "status", "priority", "estimatedMinutes", "progress", "eventType"],
+        properties: {
+          kind: { type: "string", enum: [
+            "create_assignment", "update_assignment", "delete_assignment",
+            "create_task", "update_task", "delete_task",
+            "create_event", "update_event", "delete_event",
+          ] },
+          targetId: nullableString,
+          courseId: nullableString,
+          title: nullableString,
+          description: nullableString,
+          dueAt: nullableString,
+          startAt: nullableString,
+          endAt: nullableString,
+          status: nullableString,
+          priority: nullableString,
+          estimatedMinutes: nullableInteger,
+          progress: nullableInteger,
+          eventType: nullableString,
+        },
+      },
+    },
   },
 };

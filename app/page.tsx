@@ -124,7 +124,6 @@ function Topbar({ title, openMenu, openPlanner, openAdd, openAuth, aiConfigured 
 
 function TodayView({ openPlanner }: { openPlanner: () => void }) {
   const data = useAcademicData();
-  const [done, setDone] = useState([false, false, true]);
   const [now] = useState(() => Date.now());
   const openAssignments = data?.assignments.filter((assignment) => assignment.status !== "completed") ?? [];
   const weekEnd = now + 7 * 86400000;
@@ -195,14 +194,10 @@ function TodayView({ openPlanner }: { openPlanner: () => void }) {
           </article>
 
           <article className="panel checklist-panel">
-            <div className="panel-head"><div><h2>Quick wins</h2><p>Small tasks for open moments</p></div><span className="count-pill">{done.filter(Boolean).length}/3</span></div>
-            {[
-              "Review lecture 8 flashcards",
-              "Email essay outline to tutor",
-              "Upload problem set scan",
-            ].map((task, i) => (
-              <button className={`check-row ${done[i] ? "checked" : ""}`} key={task} onClick={() => setDone((d) => d.map((v, n) => n === i ? !v : v))}>
-                <span className="checkbox">{done[i] && <Check size={13} />}</span><span>{task}</span><small>{["15 min", "5 min", "3 min"][i]}</small>
+            <div className="panel-head"><div><h2>Quick wins</h2><p>Small tasks for open moments</p></div><span className="count-pill">{data?.tasks.filter(task=>task.status==="completed").length||0}/{data?.tasks.length||0}</span></div>
+            {(data?.tasks.length?data.tasks.slice(0,5):[{id:"example-1",title:"Ask Alma to add a task",status:"pending",estimatedMinutes:5}]).map((task) => (
+              <button className={`check-row ${task.status === "completed" ? "checked" : ""}`} key={task.id} onClick={async()=>{if(task.id.startsWith("example-")){openPlanner();return;}await fetch(`/api/tasks/${task.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:task.status==="completed"?"pending":"completed"})});location.reload();}}>
+                <span className="checkbox">{task.status === "completed" && <Check size={13} />}</span><span>{task.title}</span><small>{task.estimatedMinutes} min</small>
               </button>
             ))}
           </article>
@@ -350,7 +345,7 @@ function ProgressView({openGrade}:{openGrade:()=>void}) {
 }
 
 type AssignmentDraft={title:string;description:string;courseId:string;dueAt:string;estimatedMinutes:number;priority:"low"|"medium"|"high";confidence:number;subtasks:Array<{title:string;estimatedMinutes:number}>};
-type PlannerPlan={planId:string;action:"answer"|"rebuild_schedule";message:string;changes:PlanChange[];atRisk:string[];aiUsed:boolean;accepted?:boolean};
+type PlannerPlan={planId:string;action:"answer"|"rebuild_schedule"|"workspace_update"|"clarification";message:string;changes:PlanChange[];atRisk:string[];appliedActions?:Array<{kind:string;id:string;summary:string}>;aiUsed:boolean;accepted?:boolean};
 type ChatEntry={id:string;role:"user"|"assistant";text:string;createdAt:string;attachmentName?:string;aiUsed?:boolean;error?:boolean;plan?:PlannerPlan;assignment?:{draft:AssignmentDraft;saved?:boolean}};
 
 const CHAT_STORAGE_KEY="alma-planner-conversation-v2";
@@ -363,14 +358,16 @@ function ChatGPTAuthModal({onClose,onChanged}:{onClose:()=>void;onChanged:()=>Pr
   const [status,setStatus]=useState<CodexLoginStatus>({status:data?.aiConfigured?"connected":"disconnected",connected:Boolean(data?.aiConfigured),message:data?.aiAuthMessage||"Connect your ChatGPT account to use Codex in Alma.",model:data?.aiModel||"gpt-5.6-luna"});
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
+  const authOpened=useRef(false);
   useEffect(()=>{if(status.status!=="pending")return;const timer=setInterval(async()=>{try{const response=await fetch("/api/auth/codex",{cache:"no-store"});const result=await response.json();if(!response.ok)return;setStatus(result);if(result.connected)await onChanged();}catch{}},2000);return()=>clearInterval(timer);},[status.status,onChanged]);
-  async function connect(){setLoading(true);setError("");try{const response=await fetch("/api/auth/codex",{method:"POST"});const result=await response.json();if(!response.ok)throw new Error(result.error||"Unable to start ChatGPT sign-in");setStatus(result);}catch(problem){setError(problem instanceof Error?problem.message:"Unable to start ChatGPT sign-in");}finally{setLoading(false);}}
+  useEffect(()=>{if(status.verificationUrl&&!authOpened.current){authOpened.current=true;const authWindow=window.open(status.verificationUrl,"_blank","noopener,noreferrer");if(!authWindow)window.location.assign(status.verificationUrl);}},[status.verificationUrl]);
+  async function connect(){setLoading(true);setError("");authOpened.current=false;try{const response=await fetch("/api/auth/codex",{method:"POST"});const result=await response.json();if(!response.ok)throw new Error(result.error||"Unable to start ChatGPT sign-in");setStatus(result);}catch(problem){setError(problem instanceof Error?problem.message:"Unable to start ChatGPT sign-in");}finally{setLoading(false);}}
   async function copyCode(){if(!status.userCode)return;await navigator.clipboard.writeText(status.userCode);}
   async function logout(){setLoading(true);setError("");try{const response=await fetch("/api/auth/codex",{method:"DELETE"});if(!response.ok)throw new Error("Unable to disconnect ChatGPT");setStatus({status:"disconnected",connected:false,message:"ChatGPT disconnected from this browser.",model:data?.aiModel||"gpt-5.6-luna"});await onChanged();}catch(problem){setError(problem instanceof Error?problem.message:"Unable to disconnect ChatGPT");}finally{setLoading(false);}}
-  return <div className="modal-wrap"><button className="modal-scrim" onClick={onClose} aria-label="Close"/><section className="add-modal auth-modal"><div className="modal-head"><div><span className="modal-kicker"><Sparkles size={15}/> CODEX OAUTH</span><h2>{status.connected?"Your ChatGPT is connected":"Connect your ChatGPT"}</h2><p>Alma keeps this browser’s Codex login isolated from the machine owner and every other browser.</p></div><button onClick={onClose}><X size={20}/></button></div><div className="auth-modal-body">{status.connected?<><div className="auth-success"><Check size={22}/><span><strong>Connected with ChatGPT</strong><small>Using {status.model} · low reasoning</small></span></div><p>Your ChatGPT subscription and Codex allowance are used for Alma’s AI requests. Credentials remain server-side in this browser’s isolated session.</p><button className="auth-logout" onClick={logout} disabled={loading}><LogOut size={16}/>{loading?"Disconnecting…":"Disconnect ChatGPT"}</button></>:status.userCode?<><div className="device-code"><small>ONE-TIME CODE</small><strong>{status.userCode}</strong><button onClick={copyCode}><Copy size={15}/> Copy code</button></div><ol><li>Open OpenAI’s secure device sign-in page.</li><li>Sign in to the ChatGPT account you want Alma to use.</li><li>Enter the code above, then return here.</li></ol><a className="auth-open" href={status.verificationUrl} target="_blank" rel="noreferrer">Open ChatGPT sign-in <ExternalLink size={16}/></a><small className="auth-waiting">Waiting for authorization… This code expires in 15 minutes.</small></>:<><div className="auth-explainer"><LogIn size={21}/><div><strong>No shared machine login</strong><p>Alma will create a private Codex session for this browser and will not use the developer’s ChatGPT account.</p></div></div><button className="auth-connect" onClick={connect} disabled={loading}>{loading?"Starting sign-in…":"Continue with ChatGPT"}<ArrowRight size={16}/></button></>}{error&&<div className="form-error">{error}</div>}</div></section></div>;
+  return <div className="modal-wrap"><button className="modal-scrim" onClick={onClose} aria-label="Close"/><section className="add-modal auth-modal"><div className="modal-head"><div><span className="modal-kicker"><Sparkles size={15}/> CHATGPT</span><h2>{status.connected?"ChatGPT connected":"Login with ChatGPT"}</h2><p>{status.connected?"Alma AI is ready to use.":"Login with ChatGPT to use Alma AI."}</p></div><button onClick={onClose}><X size={20}/></button></div><div className="auth-modal-body">{status.connected?<><div className="auth-success"><Check size={22}/><span><strong>Connected with ChatGPT</strong><small>Using {status.model} · low reasoning</small></span></div><button className="auth-logout" onClick={logout} disabled={loading}><LogOut size={16}/>{loading?"Disconnecting…":"Disconnect ChatGPT"}</button></>:status.verificationUrl?<>{status.userCode&&<div className="device-code"><small>ONE-TIME CODE</small><strong>{status.userCode}</strong><button onClick={copyCode}><Copy size={15}/> Copy code</button></div>}<a className="auth-open" href={status.verificationUrl} target="_blank" rel="noreferrer">Continue with ChatGPT <ExternalLink size={16}/></a><small className="auth-waiting">Waiting for authorization…</small></>:<><button className="auth-connect" onClick={connect} disabled={loading}>{loading?"Starting sign-in…":status.status==="error"?"Try login again":"Login with ChatGPT"}<ArrowRight size={16}/></button>{status.status==="error"&&<div className="form-error">{status.message}</div>}</>}{error&&<div className="form-error">{error}</div>}</div></section></div>;
 }
 
-function PlannerDrawer({ open, onClose, onChanged }: { open: boolean; onClose: () => void; onChanged: () => Promise<void> }) {
+function PlannerDrawer({ open, onClose, onChanged, onLogin }: { open: boolean; onClose: () => void; onChanged: () => Promise<void>; onLogin: () => void }) {
   const data=useAcademicData();
   const [message,setMessage]=useState("");
   const [attachment,setAttachment]=useState<File|null>(null);
@@ -398,6 +395,7 @@ function PlannerDrawer({ open, onClose, onChanged }: { open: boolean; onClose: (
 
   async function submit(event:FormEvent){
     event.preventDefault();
+    if(!data?.aiConfigured){setComposerError("Login with ChatGPT to use Alma AI.");onLogin();return;}
     const text=message.trim();
     const file=attachment;
     if((!text&&!file)||loading)return;
@@ -419,6 +417,7 @@ function PlannerDrawer({ open, onClose, onChanged }: { open: boolean; onClose: (
         const result=await response.json();
         if(!response.ok)throw new Error(result.error||"Unable to respond");
         setEntries(current=>[...current,{id:makeChatId(),role:"assistant",text:result.message,createdAt:new Date().toISOString(),aiUsed:result.aiUsed,plan:result.changes.length?result:undefined}]);
+        if(result.appliedActions?.length)await onChanged();
       }
     }catch(problem){
       setEntries(current=>[...current,{id:makeChatId(),role:"assistant",text:problem instanceof Error?problem.message:"Something went wrong. Please try again.",createdAt:new Date().toISOString(),error:true}]);
@@ -444,14 +443,14 @@ function PlannerDrawer({ open, onClose, onChanged }: { open: boolean; onClose: (
   return <>
     {open&&<button className="drawer-scrim" aria-label="Close planner" onClick={onClose}/>}
     <aside className={`planner-drawer ${open?"open":""}`} aria-label="Alma planner">
-      <div className="drawer-head"><div className="alma-orb"><Sparkles size={19}/></div><div><strong>Alma</strong><span><i className={data?.aiConfigured?"":"offline"}/>{data?.aiConfigured?`Your ChatGPT · ${data.aiModel||"Codex"}`:"Local fallback · ChatGPT not connected"}</span></div>{entries.length>0&&<button onClick={clearConversation} aria-label="Clear conversation" title="Clear conversation"><Trash2 size={17}/></button>}<button onClick={onClose} aria-label="Close"><X size={20}/></button></div>
+      <div className="drawer-head"><div className="alma-orb"><Sparkles size={19}/></div><div><strong>Alma</strong><span><i className={data?.aiConfigured?"":"offline"}/>{data?.aiConfigured?`Your ChatGPT · ${data.aiModel||"Codex"}`:"Login with ChatGPT to use Alma AI"}</span></div>{entries.length>0&&<button onClick={clearConversation} aria-label="Clear conversation" title="Clear conversation"><Trash2 size={17}/></button>}<button onClick={onClose} aria-label="Close"><X size={20}/></button></div>
       <div className="chat-body" ref={chatBody}>
         <div className="chat-date">TODAY</div>
-        <div className="assistant-message"><p>Hi Shaurya — ask about your workload, rebuild your schedule, or attach a PDF assignment brief.</p></div>
-        {entries.length===0&&<div className="suggestions"><button onClick={()=>setMessage("What should I focus on this week?")}>What should I focus on this week?</button><button onClick={()=>setMessage("I missed today’s essay session. Find another time this week.")}>I missed a study session</button><button onClick={()=>fileInput.current?.click()}><Paperclip size={13}/> Upload an assignment brief</button></div>}
+        <div className="assistant-message"><p>Hi Shaurya — ask me to add, edit, complete, move, or delete assignments, tasks, and calendar events. I can also plan your workload.</p></div>
+        {entries.length===0&&<div className="suggestions"><button onClick={()=>setMessage("Add a task to email my tutor tomorrow")}>Add a task</button><button onClick={()=>setMessage("Add football practice tomorrow from 5:30 to 7 PM")}>Add a calendar event</button><button onClick={()=>setMessage("What should I focus on this week?")}>Plan my week</button><button onClick={()=>fileInput.current?.click()}><Paperclip size={13}/> Upload an assignment brief</button></div>}
         {entries.map(entry=><div className={`chat-entry ${entry.role}`} key={entry.id}>
           {entry.role==="user"?<div className="user-message">{entry.attachmentName&&<span className="message-attachment"><FileText size={14}/>{entry.attachmentName}</span>}{entry.text&&<p>{entry.text}</p>}</div>:<>
-            <div className={`assistant-message ${entry.error?"error":""}`}><p>{entry.text}</p>{!entry.error&&<small>{entry.aiUsed?"Codex · academic context included":"Alma local planner"}</small>}</div>
+            <div className={`assistant-message ${entry.error?"error":""}`}><p>{entry.text}</p>{!entry.error&&<small>Codex · academic context included</small>}</div>
             {entry.assignment&&<article className={`assignment-preview ${entry.assignment.saved?"saved":""}`}><div className="assignment-preview-head"><span><FileText size={16}/> ASSIGNMENT BRIEF</span><b>{entry.assignment.saved?"Saved":`${Math.round(entry.assignment.draft.confidence*100)}% confidence`}</b></div><div className="assignment-preview-body"><span className="course-pill">{data?.courses.find(course=>course.id===entry.assignment?.draft.courseId)?.code||"COURSE"}</span><h3>{entry.assignment.draft.title}</h3><p>{entry.assignment.draft.description}</p><div><span><CalendarDays size={14}/>{new Date(entry.assignment.draft.dueAt).toLocaleString([],{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}</span><span><Clock3 size={14}/>{Math.round(entry.assignment.draft.estimatedMinutes/60*10)/10}h estimated</span></div><ul>{entry.assignment.draft.subtasks.slice(0,4).map((subtask,index)=><li key={`${subtask.title}-${index}`}><i>{index+1}</i><span>{subtask.title}</span><b>{subtask.estimatedMinutes}m</b></li>)}</ul></div>{!entry.assignment.saved&&<div className="preview-actions"><button onClick={()=>saveAssignment(entry.id,entry.assignment!.draft)} disabled={savingId===entry.id}>{savingId===entry.id?"Saving...":"Save assignment"}<Check size={15}/></button></div>}</article>}
             {entry.plan&&<article className={`plan-preview ${entry.plan.accepted?"accepted":""}`}><div className="plan-title"><span><Sparkles size={16}/> PROPOSED PLAN</span><b>{entry.plan.accepted?"Applied":`${entry.plan.changes.length} sessions`}</b></div>{entry.plan.changes.slice(0,8).map(change=><div className="plan-change" key={change.id}><span className="change-icon add">+</span><div><strong>{change.title}</strong><small>{new Date(change.startAt).toLocaleString([],{weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})} · {Math.round((+new Date(change.endAt)-+new Date(change.startAt))/60000)}m</small></div></div>)}<div className="plan-note"><Check size={15}/>{entry.plan.atRisk.length?`${entry.plan.atRisk.length} item(s) still need attention: ${entry.plan.atRisk.join(", ")}`:"The proposed work fits around every fixed commitment."}</div>{!entry.plan.accepted&&<div className="plan-actions"><button onClick={()=>acceptPlan(entry.id,entry.plan!)} disabled={savingId===entry.id}>{savingId===entry.id?"Applying...":"Accept plan"}</button><button onClick={()=>setMessage("Adjust that plan: make it lighter and keep more evening time free.")}>Adjust</button></div>}</article>}
           </>}
@@ -462,7 +461,7 @@ function PlannerDrawer({ open, onClose, onChanged }: { open: boolean; onClose: (
         <input ref={fileInput} hidden type="file" accept="application/pdf,.pdf,text/plain,.txt" onChange={event=>chooseAttachment(event.target.files?.[0]||null)}/>
         {attachment&&<div className="composer-attachment"><FileText size={15}/><span><strong>{attachment.name}</strong><small>{Math.max(1,Math.round(attachment.size/1024))} KB</small></span><button type="button" onClick={()=>{setAttachment(null);if(fileInput.current)fileInput.current.value="";}} aria-label="Remove attachment"><X size={15}/></button></div>}
         {composerError&&<div className="composer-error">{composerError}<button type="button" onClick={()=>setComposerError("")}><X size={13}/></button></div>}
-        <textarea value={message} onChange={event=>setMessage(event.target.value)} onKeyDown={event=>{if(event.key==="Enter"&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();formRef.current?.requestSubmit();}}} placeholder={attachment?"Add instructions for this assignment...":"Ask Alma anything about your semester..."} rows={3}/>
+        <textarea value={message} onChange={event=>setMessage(event.target.value)} onKeyDown={event=>{if(event.key==="Enter"&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();formRef.current?.requestSubmit();}}} placeholder={attachment?"Add instructions for this assignment...":"Try “Move football to Friday at 6 PM”..."} rows={3}/>
         <div><button type="button" onClick={()=>fileInput.current?.click()} aria-label="Attach assignment" title="Attach PDF or text"><Paperclip size={18}/></button><span>Enter to send · Shift+Enter for a new line</span><button className="send-button" type="submit" aria-label="Send" disabled={loading||(!message.trim()&&!attachment)}>{loading?<span className="send-spinner"/>:<Send size={17}/>}</button></div>
       </form>
     </aside>
@@ -529,7 +528,7 @@ export default function HomePage() {
         </main>
       </div>
       <button className="mobile-ai" onClick={() => setPlanner(true)} aria-label="Ask Alma"><Sparkles size={20} /></button>
-      <PlannerDrawer open={planner} onClose={() => setPlanner(false)} onChanged={refresh} />
+      <PlannerDrawer open={planner} onClose={() => setPlanner(false)} onChanged={refresh} onLogin={()=>setAuth(true)} />
       <AddAssignmentModal key={add||"closed"} open={Boolean(add)} initialMode={add||"write"} onClose={() => setAdd(null)} onChanged={refresh} />
       <RecordModal kind={record||"course"} open={Boolean(record)} onClose={()=>setRecord(null)} onChanged={refresh}/>
       {auth&&<ChatGPTAuthModal onClose={()=>setAuth(false)} onChanged={refresh}/>}

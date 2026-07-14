@@ -7,11 +7,11 @@ import {
   retrieveAcademicContext,
   toScheduleData,
   type ConversationMessage,
-  type RetrievedAcademicContext,
   type RetrievalIntent,
 } from "@/lib/retrieval";
 import { planAcademicRetrieval } from "@/lib/retrieval-pipeline";
 import { buildSchedule } from "@/lib/scheduler";
+import { applyWorkspaceActions, looksLikeWorkspaceCommand, planWorkspaceActions } from "@/lib/workspace-actions";
 
 export const runtime = "nodejs";
 
@@ -25,30 +25,6 @@ type AcademicAnswer = {
   preferredSessionMinutes: number | null;
 };
 
-function deterministicAnswer(intent: RetrievalIntent, context: RetrievedAcademicContext): AcademicAnswer {
-  const upcoming = context.assignments.filter((assignment) => assignment.status !== "completed");
-  let message = "I found the relevant current-term records, but Codex is unavailable right now.";
-  if (intent === "rebuild_schedule") {
-    message = upcoming.length
-      ? `I built a bounded plan for ${upcoming.length} relevant assignment${upcoming.length === 1 ? "" : "s"}.`
-      : "There are no incomplete assignments in the selected planning window.";
-  } else if (intent === "review_progress" && context.grades.length) {
-    const average = context.grades.reduce((sum, grade) => sum + grade.score / grade.maxScore * 100, 0) / context.grades.length;
-    message = `Your selected grade records average ${Math.round(average)}%.`;
-  } else if (upcoming.length) {
-    message = `The closest relevant deadline is ${upcoming[0].title} on ${new Date(upcoming[0].dueAt).toLocaleDateString()}.`;
-  }
-  return {
-    intent,
-    message,
-    focusAssignmentIds: upcoming.slice(0, 3).map((assignment) => assignment.id),
-    dailyLimitMinutes: null,
-    earliestStartHour: null,
-    latestEndHour: null,
-    preferredSessionMinutes: null,
-  };
-}
-
 export async function POST(request: Request) {
   try {
     const userId = userIdFromRequest(request);
@@ -56,10 +32,29 @@ export async function POST(request: Request) {
     const body = (await request.json()) as { message?: string; history?: ConversationMessage[] };
     const message = body.message?.trim();
     if (!message) return Response.json({ error: "Tell Alma what changed" }, { status: 400 });
+    const auth = await getCodexAuthStatus(codexSessionId);
+    if (!auth.connected) {
+      return Response.json({ error: "Login with ChatGPT to use Alma AI.", code: "CHATGPT_LOGIN_REQUIRED" }, { status: 401 });
+    }
     const history = Array.isArray(body.history) ? body.history.slice(-8) : [];
     const now = new Date();
+    if (codexSessionId && looksLikeWorkspaceCommand(message)) {
+      const actionPlan = await planWorkspaceActions({ userId, message, history, now, codexSessionId });
+      if (actionPlan?.needsClarification) {
+        return Response.json({ planId: randomUUID(), action: "clarification", intent: "answer", message: actionPlan.message, changes: [], atRisk: [], appliedActions: [], aiUsed: true });
+      }
+      if (actionPlan?.actions.length) {
+        const appliedActions = applyWorkspaceActions(userId, actionPlan.actions);
+        return Response.json({
+          planId: randomUUID(), action: "workspace_update", intent: "answer",
+          message: actionPlan.message || `${appliedActions.map((item) => item.summary).join("; ")}.`,
+          changes: [], atRisk: [], appliedActions, aiUsed: true,
+        });
+      }
+    }
+    const complexRequest = /\b(schedule|reschedule|rebuild|plan my|move|lighter|heavier|study block|study session|free my|evening|grade|gpa|score|performance|progress|trend|standing|prioriti[sz]|historical|history|prerequisite|degree plan|semester|assignment brief|analy[sz]e)\b/i.test(`${message} ${history.map((item) => item.text).join(" ")}`);
 
-    const retrieval = await planAcademicRetrieval({ userId, latestMessage: message, history, now, codexSessionId });
+    const retrieval = await planAcademicRetrieval({ userId, latestMessage: message, history, now, codexSessionId, fastPath: !complexRequest });
     const context = retrieveAcademicContext(userId, retrieval.plan, now);
     let answer: AcademicAnswer | null = null;
     try {
@@ -86,7 +81,7 @@ export async function POST(request: Request) {
     } catch {
       answer = null;
     }
-    answer ||= deterministicAnswer(retrieval.plan.intent, context);
+    if (!answer) throw new Error("Alma could not get a response from Codex. Please try again.");
     answer.intent = retrieval.plan.intent;
     const retrievedAssignmentIds = new Set(context.assignments.map((assignment) => assignment.id));
     answer.focusAssignmentIds = [...new Set(answer.focusAssignmentIds)].filter((id) => retrievedAssignmentIds.has(id));
@@ -108,7 +103,6 @@ export async function POST(request: Request) {
           .filter((assignment) => assignment.status !== "completed" && !scheduledAssignments.has(assignment.id))
           .map((assignment) => assignment.title)
       : [];
-    const auth = await getCodexAuthStatus(codexSessionId);
     const response: Record<string, unknown> = {
       planId: randomUUID(),
       action: answer.intent === "rebuild_schedule" ? "rebuild_schedule" : "answer",

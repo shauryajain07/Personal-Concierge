@@ -23,10 +23,13 @@ const {
   createCodexSessionId,
 } = await import("../lib/codex-auth");
 const { getCodexAuthStatus } = await import("../lib/codex");
+const { applyWorkspaceActions, looksLikeWorkspaceCommand } = await import("../lib/workspace-actions");
 const { extractDocument } = await import("../app/api/assignments/analyze/route");
 const { POST: createAssignment } = await import("../app/api/assignments/route");
 const { POST: createNote } = await import("../app/api/notes/route");
 const { POST: applyPlannerChanges } = await import("../app/api/planner/apply/route");
+const { POST: askPlanner } = await import("../app/api/planner/route");
+const { POST: analyzeAssignment } = await import("../app/api/assignments/analyze/route");
 
 after(() => rmSync(directory, { recursive: true, force: true }));
 
@@ -173,6 +176,21 @@ test("follow-ups resolve the prior subject with limited recent history", async (
   assert.ok(retrieval.answerHistory.length <= RETRIEVAL_LIMITS.conversationMessages);
 });
 
+test("simple chat uses the bounded fast path without a planning-model call", async () => {
+  let plannerInvoked = false;
+  const retrieval = await planAcademicRetrieval({
+    userId: "student-test",
+    latestMessage: "What is my next deadline?",
+    history: [],
+    fastPath: true,
+    plannerCall: async () => { plannerInvoked = true; throw new Error("planner should be skipped"); },
+  });
+  assert.equal(plannerInvoked, false);
+  assert.equal(retrieval.usedFallback, false);
+  assert.equal(retrieval.plan.intent, "answer");
+  assert.ok(retrieval.plan.dateRange.start);
+});
+
 test("retrieval failure falls back to bounded current records, never the entire workspace", async () => {
   const retrieval = await planAcademicRetrieval({
     userId: "student-test",
@@ -187,6 +205,24 @@ test("retrieval failure falls back to bounded current records, never the entire 
   assert.equal(context.grades.length, 0);
   assert.equal(context.semesters.length, 0);
   assert.ok(context.assignments.length <= RETRIEVAL_LIMITS.assignments);
+});
+
+test("planner and assignment analysis require ChatGPT instead of returning local answers", async () => {
+  const plannerResponse = await askPlanner(new Request("http://alma.test/api/planner", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-alma-user": "student-test" },
+    body: JSON.stringify({ message: "hi" }),
+  }));
+  assert.equal(plannerResponse.status, 401);
+  assert.equal((await plannerResponse.json()).code, "CHATGPT_LOGIN_REQUIRED");
+
+  const analysisResponse = await analyzeAssignment(new Request("http://alma.test/api/assignments/analyze", {
+    method: "POST",
+    headers: { "x-alma-user": "student-test" },
+    body: new FormData(),
+  }));
+  assert.equal(analysisResponse.status, 401);
+  assert.equal((await analysisResponse.json()).code, "CHATGPT_LOGIN_REQUIRED");
 });
 
 test("assignment upload extraction, assignment save, note save, and schedule apply still work", async () => {
@@ -226,6 +262,40 @@ test("assignment upload extraction, assignment save, note save, and schedule app
   }));
   assert.equal(applyResponse.status, 200);
   assert.ok(getDb().prepare("SELECT id FROM study_sessions WHERE user_id=? AND plan_id=?").get("student-test", "route-regression-plan"));
+});
+
+test("chat workspace actions create, edit, complete, and delete user-scoped records", () => {
+  assert.equal(looksLikeWorkspaceCommand("Add a task to email my tutor tomorrow"), true);
+  const created = applyWorkspaceActions("student-test", [{
+    kind: "create_task", targetId: null, courseId: "course-phy", title: "Email tutor", description: null,
+    dueAt: new Date(Date.now() + 86_400_000).toISOString(), startAt: null, endAt: null, status: null,
+    priority: "high", estimatedMinutes: 10, progress: null, eventType: null,
+  }]);
+  assert.equal(created.length, 1);
+  assert.equal(getAcademicData("student-test").tasks.find((task) => task.id === created[0].id)?.title, "Email tutor");
+
+  applyWorkspaceActions("student-test", [{
+    kind: "update_task", targetId: created[0].id, courseId: null, title: null, description: null, dueAt: null,
+    startAt: null, endAt: null, status: "completed", priority: null, estimatedMinutes: null, progress: null, eventType: null,
+  }]);
+  assert.equal(getAcademicData("student-test").tasks.find((task) => task.id === created[0].id)?.status, "completed");
+
+  const start = new Date(Date.now() + 2 * 86_400_000); const end = new Date(+start + 3_600_000);
+  const event = applyWorkspaceActions("student-test", [{
+    kind: "create_event", targetId: null, courseId: null, title: "Office hours", description: null, dueAt: null,
+    startAt: start.toISOString(), endAt: end.toISOString(), status: null, priority: null, estimatedMinutes: null, progress: null, eventType: "personal",
+  }]);
+  assert.ok(getAcademicData("student-test").events.some((item) => item.id === event[0].id));
+  applyWorkspaceActions("student-test", [{
+    kind: "delete_event", targetId: event[0].id, courseId: null, title: null, description: null, dueAt: null,
+    startAt: null, endAt: null, status: null, priority: null, estimatedMinutes: null, progress: null, eventType: null,
+  }]);
+  assert.equal(getAcademicData("student-test").events.some((item) => item.id === event[0].id), false);
+
+  assert.throws(() => applyWorkspaceActions("another-student", [{
+    kind: "delete_task", targetId: created[0].id, courseId: null, title: null, description: null, dueAt: null,
+    startAt: null, endAt: null, status: null, priority: null, estimatedMinutes: null, progress: null, eventType: null,
+  }]), /no longer exists/);
 });
 
 test("Codex authentication is isolated per browser and never falls back to the machine owner", async () => {
