@@ -1,0 +1,4 @@
+import { randomUUID } from "node:crypto";
+import { getDb,seedUser,userIdFromRequest } from "@/lib/db";
+export const runtime="nodejs";
+export async function POST(request:Request){const userId=userIdFromRequest(request);seedUser(userId);const input=await request.json() as {title?:string;startAt?:string;endAt?:string;type?:string;courseId?:string|null};if(!input.title||!input.startAt||!input.endAt)return Response.json({error:"Title, start, and end are required"},{status:400});if(+new Date(input.endAt)<=+new Date(input.startAt))return Response.json({error:"End time must be after start time"},{status:400});const id=randomUUID();getDb().prepare("INSERT INTO calendar_events (id,user_id,course_id,title,start_at,end_at,type,locked) VALUES (?,?,?,?,?,?,?,1)").run(id,userId,input.courseId||null,input.title,new Date(input.startAt).toISOString(),new Date(input.endAt).toISOString(),input.type||"personal");return Response.json({id},{status:201});}

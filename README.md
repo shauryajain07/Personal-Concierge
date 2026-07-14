@@ -1,98 +1,57 @@
-# vinext-starter
+# Alma Academic OS
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+A standard full-stack Next.js and TypeScript application for managing a four-year academic program, courses, assignments, notes, grades, calendar commitments, study sessions, and AI-assisted planning.
 
-## Prerequisites
+## Stack
 
-- Node.js `>=22.13.0`
+- Next.js App Router and React
+- TypeScript on the client and server
+- Node.js route handlers
+- SQLite through `better-sqlite3`
+- Server-side Codex SDK integration using local ChatGPT OAuth
+- Local filesystem storage for uploaded assignment briefs
 
-## Quick Start
+There are no Sites, Vinext, Cloudflare Worker, or browser-only persistence dependencies.
+
+## Run locally
 
 ```bash
 npm install
+cp .env.example .env.local
 npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+The SQL database and demo academic workspace are created automatically under `data/`. This folder is ignored by Git.
+
+## Connect Codex OAuth
+
+Select **Connect ChatGPT** inside Alma. Alma starts the official Codex device authorization flow and shows an OpenAI verification URL plus a one-time code. The student completes that flow using the ChatGPT account they want Alma to use.
+
+Each browser receives an opaque, HttpOnly, SameSite cookie. Its Codex credentials are kept server-side in an isolated `CODEX_HOME` under `data/codex-sessions/`; OAuth credentials and access tokens are never returned to browser JavaScript. Logging out deletes that isolated credential directory.
+
+No OpenAI API key is read or required. The server removes API-key and access-token environment variables before starting the Codex SDK, refuses to fall back to the host machine’s Codex login, and runs each academic reasoning task in a read-only, no-network Codex thread. Text-based PDFs are extracted locally; scanned PDFs are rendered into page images for Codex vision. If ChatGPT is disconnected, assignment capture and scheduling retain deterministic local fallbacks.
+
+Alma defaults to `gpt-5.6-luna` with low reasoning for the retrieval and answer stages. Set `ALMA_CODEX_MODEL` only when a deployment needs a different Codex model.
+
+## Relevance-based AI retrieval
+
+Planner chat and chat assignment analysis use two stages:
+
+1. Codex receives the current date, timezone, latest request, at most six follow-up messages, and a compact metadata index. The index contains IDs, titles/names, course codes, statuses, dates, and note tags—never note bodies, assignment descriptions, grade history, calendar contents, credentials, or uploaded document text.
+2. The resulting strict retrieval plan drives parameterized, user-scoped SQLite queries. Only the selected records are sent to the answering call. Schedule requests retrieve incomplete assignments, fixed commitments, and existing sessions inside the bounded planning window; explicit course and assignment mentions are retained even outside that window.
+
+Retrieved data is limited to 40 assignments, 32 courses, 6 notes, 60 grades, 120 fixed events, 120 study sessions, and 16 historical semesters. Note bodies are truncated to 2,000 characters and assignment descriptions to 1,200 characters. Historical semesters and grades are excluded unless the request needs them. In development, API responses include ID/count-only retrieval diagnostics; record bodies and OAuth data are never logged.
+
+## Verification
+
+```bash
 npm run build
+npm test
+npm run lint
 ```
 
-This starter does not use `wrangler.jsonc`.
+## Production notes
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+The included storage adapters target a local or single-server Node deployment. Before horizontal scaling, replace SQLite with PostgreSQL and local uploads with S3-compatible object storage. Keep the API contracts and client UI unchanged.
