@@ -73,7 +73,7 @@ export const RETRIEVAL_LIMITS = {
   studySessions: 120,
   semesters: 16,
   subtasks: 160,
-  conversationMessages: 6,
+  conversationMessages: 8,
 } as const;
 
 type UserProfileRow = { timezone: string; maxDailyMinutes: number };
@@ -134,10 +134,12 @@ export function getCompactAcademicIndex(userId: string, now = new Date()): { ind
 const FOLLOW_UP_PATTERN = /\b(that|those|it|them|earlier|previous|same|again|after that|make it|make that|lighter|heavier|move it|adjust|what about|how about|instead|also|continue|why|can you)\b/i;
 
 export function selectRetrievalPlannerHistory(history: ConversationMessage[], latestMessage: string) {
-  if (!FOLLOW_UP_PATTERN.test(latestMessage)) return [];
+  // A thread is the student's working context. Keep a tiny tail for new turns,
+  // and a larger tail when the message explicitly refers back to prior work.
+  const limit = FOLLOW_UP_PATTERN.test(latestMessage) ? RETRIEVAL_LIMITS.conversationMessages : 4;
   return history
     .filter((item) => (item.role === "user" || item.role === "assistant") && typeof item.text === "string")
-    .slice(-RETRIEVAL_LIMITS.conversationMessages)
+    .slice(-limit)
     .map((item) => ({ role: item.role, text: item.text.slice(0, 1_500) }));
 }
 
@@ -147,7 +149,7 @@ function mentions(text: string, ...candidates: Array<string | null | undefined>)
 }
 
 function safeIntent(message: string): RetrievalIntent {
-  if (/\b(schedule|reschedule|rebuild|plan my|move|lighter|study blocks?|study sessions?|free my|evenings? free)\b/i.test(message)) return "rebuild_schedule";
+  if (/\b(schedule|reschedule|rebuild|plan my|move|shift|spread|redistribute|lighter|study blocks?|study sessions?|free my|clear (?:up|my)|evenings? free)\b/i.test(message)) return "rebuild_schedule";
   if (/\b(grade|gpa|score|performance|progress|trend|standing|doing in)\b/i.test(message)) return "review_progress";
   if (/\b(upload|attached|assignment brief|analy[sz]e assignment)\b/i.test(message)) return "analyze_assignment";
   return "answer";

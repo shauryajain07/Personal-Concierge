@@ -41,7 +41,7 @@ export async function codexJson<T>({
     approvalPolicy: "never",
     networkAccessEnabled: false,
     webSearchMode: "disabled",
-    modelReasoningEffort: "low",
+    modelReasoningEffort: "medium",
   });
   const input: UserInput[] = [
     {
@@ -115,7 +115,7 @@ export const retrievalPlanSchema: JsonSchema = {
     noteQuery: { type: ["string", "null"] },
     includeGrades: { type: "boolean" },
     includeHistoricalSemesters: { type: "boolean" },
-    conversationMessageCount: { type: "integer", minimum: 0, maximum: 6 },
+    conversationMessageCount: { type: "integer", minimum: 0, maximum: 8 },
     reason: { type: "string" },
   },
 };

@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     if (!auth.connected) {
       return Response.json({ error: "Login with ChatGPT to use Alma AI.", code: "CHATGPT_LOGIN_REQUIRED" }, { status: 401 });
     }
-    const history = Array.isArray(body.history) ? body.history.slice(-8) : [];
+    const history = Array.isArray(body.history) ? body.history.slice(-12) : [];
     const now = new Date();
     if (codexSessionId && looksLikeWorkspaceCommand(message)) {
       const actionPlan = await planWorkspaceActions({ userId, message, history, now, codexSessionId });
@@ -52,7 +52,7 @@ export async function POST(request: Request) {
         });
       }
     }
-    const complexRequest = /\b(schedule|reschedule|rebuild|plan my|move|lighter|heavier|study block|study session|free my|evening|grade|gpa|score|performance|progress|trend|standing|prioriti[sz]|historical|history|prerequisite|degree plan|semester|assignment brief|analy[sz]e)\b/i.test(`${message} ${history.map((item) => item.text).join(" ")}`);
+    const complexRequest = /\b(schedule|reschedule|rebuild|plan my|move|shift|spread|redistribute|clear up|clear my|lighter|heavier|study block|study session|free my|evening|grade|gpa|score|performance|progress|trend|standing|prioriti[sz]|historical|history|prerequisite|degree plan|semester|assignment brief|analy[sz]e)\b/i.test(`${message} ${history.map((item) => item.text).join(" ")}`);
 
     const retrieval = await planAcademicRetrieval({ userId, latestMessage: message, history, now, codexSessionId, fastPath: !complexRequest });
     const context = retrieveAcademicContext(userId, retrieval.plan, now);
@@ -65,7 +65,12 @@ export async function POST(request: Request) {
           "Never assume that omitted records do not exist; say when the retrieved context is insufficient.",
           "Never invent record IDs, deadlines, grades, notes, or commitments.",
           "Keep intent equal to the retrieval plan intent.",
-          "For rebuild_schedule, return only retrieved assignment IDs in focusAssignmentIds and translate time preferences into the scheduling fields.",
+          "Act as an autonomous but reversible planning assistant: when enough context exists to make a safe proposal, make the best reasonable assumptions instead of asking the student for suggestions or preferences.",
+          "Evaluate urgency, deadlines, priority, remaining effort, daily workload, fixed commitments, existing study sessions, and the student's saved daily capacity before proposing a schedule.",
+          "For rebuild_schedule, return only retrieved assignment IDs in focusAssignmentIds and translate explicit or safely inferred time preferences into the scheduling fields.",
+          "If the student asks to clear or lighten a day, redistribute that day's flexible academic work across suitable later days while protecting deadlines, avoiding conflicts, preventing overload, and preserving reasonable breaks and evening time where possible.",
+          "Use the profile's saved maxDailyMinutes as the default dailyLimitMinutes when the student does not provide a limit. Use sensible defaults for other scheduling fields rather than asking, unless a missing fact makes every safe plan impossible.",
+          "In the response message, briefly state the planning rationale, the assumptions made, and what the proposed plan is intended to change. Present it as a proposal the student can accept or adjust; do not claim that it has already been applied or invent exact times not present in the generated changes.",
           "For non-scheduling intents, keep scheduling fields null.",
         ].join(" "),
         prompt: [

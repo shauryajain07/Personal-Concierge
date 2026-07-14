@@ -33,13 +33,13 @@ Each browser receives an opaque, HttpOnly, SameSite cookie. Its Codex credential
 
 No OpenAI API key is read or required. The server removes API-key and access-token environment variables before starting the Codex SDK, refuses to fall back to the host machine’s Codex login, and runs each academic reasoning task in a read-only, no-network Codex thread. Text-based PDFs are extracted locally; scanned PDFs are rendered into page images for Codex vision. If ChatGPT is disconnected, assignment capture and scheduling retain deterministic local fallbacks.
 
-Alma defaults to `gpt-5.6-luna` with low reasoning for the retrieval and answer stages. Set `ALMA_CODEX_MODEL` only when a deployment needs a different Codex model.
+Alma defaults to `gpt-5.6-luna` with medium reasoning for the retrieval and answer stages. Set `ALMA_CODEX_MODEL` only when a deployment needs a different Codex model.
 
 ## Relevance-based AI retrieval
 
 Planner chat and chat assignment analysis use two stages:
 
-1. Codex receives the current date, timezone, latest request, at most six follow-up messages, and a compact metadata index. The index contains IDs, titles/names, course codes, statuses, dates, and note tags—never note bodies, assignment descriptions, grade history, calendar contents, credentials, or uploaded document text.
+1. Codex receives the current date, timezone, latest request, at most eight follow-up messages, and a compact metadata index. The index contains IDs, titles/names, course codes, statuses, dates, and note tags—never note bodies, assignment descriptions, grade history, calendar contents, credentials, or uploaded document text.
 2. The resulting strict retrieval plan drives parameterized, user-scoped SQLite queries. Only the selected records are sent to the answering call. Schedule requests retrieve incomplete assignments, fixed commitments, and existing sessions inside the bounded planning window; explicit course and assignment mentions are retained even outside that window.
 
 Retrieved data is limited to 40 assignments, 32 courses, 6 notes, 60 grades, 120 fixed events, 120 study sessions, and 16 historical semesters. Note bodies are truncated to 2,000 characters and assignment descriptions to 1,200 characters. Historical semesters and grades are excluded unless the request needs them. In development, API responses include ID/count-only retrieval diagnostics; record bodies and OAuth data are never logged.

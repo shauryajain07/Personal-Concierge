@@ -13,6 +13,7 @@ const {
   RETRIEVAL_LIMITS,
   getCompactAcademicIndex,
   retrieveAcademicContext,
+  selectRetrievalPlannerHistory,
 } = await import("../lib/retrieval");
 const { compactIndexContainsNoPrivateBodies, planAcademicRetrieval } = await import("../lib/retrieval-pipeline");
 const {
@@ -174,6 +175,32 @@ test("follow-ups resolve the prior subject with limited recent history", async (
   assert.ok(retrieval.plan.assignmentIds.includes("asg-phy"));
   assert.ok(retrieval.answerHistory.length > 0);
   assert.ok(retrieval.answerHistory.length <= RETRIEVAL_LIMITS.conversationMessages);
+});
+
+test("active chat keeps recent context even without follow-up wording", () => {
+  const history = [
+    { role: "user" as const, text: "I am working on the physics test." },
+    { role: "assistant" as const, text: "Focus on wave functions first." },
+    { role: "user" as const, text: "I have one hour tonight." },
+  ];
+  const selected = selectRetrievalPlannerHistory(history, "What should I do now?");
+  assert.equal(selected.length, 3);
+  assert.equal(selected[0].text, "I am working on the physics test.");
+  assert.equal(selected[2].text, "I have one hour tonight.");
+});
+
+test("clear-and-redistribute requests route to autonomous schedule planning", async () => {
+  const retrieval = await planAcademicRetrieval({
+    userId: "student-test",
+    latestMessage: "Clear up today and redistribute the work into other days.",
+    history: [],
+    fastPath: true,
+  });
+  assert.equal(retrieval.plan.intent, "rebuild_schedule");
+  const context = retrieveAcademicContext("student-test", retrieval.plan);
+  assert.ok(context.assignments.length > 0);
+  assert.ok(Array.isArray(context.events));
+  assert.ok(Array.isArray(context.studySessions));
 });
 
 test("simple chat uses the bounded fast path without a planning-model call", async () => {

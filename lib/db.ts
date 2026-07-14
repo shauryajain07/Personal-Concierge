@@ -16,9 +16,11 @@ export function getDb() {
     const db = new Database(path);
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");
-    migrate(db);
     globalForDb.almaDb = db;
   }
+  // Dev hot reload keeps the SQLite connection alive. Run idempotent migrations
+  // on every access so a newly added table is available without restarting.
+  migrate(globalForDb.almaDb);
   return globalForDb.almaDb;
 }
 

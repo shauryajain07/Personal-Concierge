@@ -347,9 +347,13 @@ function ProgressView({openGrade}:{openGrade:()=>void}) {
 type AssignmentDraft={title:string;description:string;courseId:string;dueAt:string;estimatedMinutes:number;priority:"low"|"medium"|"high";confidence:number;subtasks:Array<{title:string;estimatedMinutes:number}>};
 type PlannerPlan={planId:string;action:"answer"|"rebuild_schedule"|"workspace_update"|"clarification";message:string;changes:PlanChange[];atRisk:string[];appliedActions?:Array<{kind:string;id:string;summary:string}>;aiUsed:boolean;accepted?:boolean};
 type ChatEntry={id:string;role:"user"|"assistant";text:string;createdAt:string;attachmentName?:string;aiUsed?:boolean;error?:boolean;plan?:PlannerPlan;assignment?:{draft:AssignmentDraft;saved?:boolean}};
+type ChatThread={id:string;title:string;entries:ChatEntry[];createdAt:string;updatedAt:string};
+const EMPTY_CHAT_ENTRIES:ChatEntry[]=[];
 
-const CHAT_STORAGE_KEY="alma-planner-conversation-v2";
+const CHAT_STORAGE_KEY="alma-planner-conversations-v3";
+const LEGACY_CHAT_STORAGE_KEY="alma-planner-conversation-v2";
 const makeChatId=()=>typeof crypto!=="undefined"&&crypto.randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random()}`;
+const newChatThread=():ChatThread=>{const now=new Date().toISOString();return{id:makeChatId(),title:"New chat",entries:[],createdAt:now,updatedAt:now};};
 
 type CodexLoginStatus={status:"disconnected"|"pending"|"connected"|"error";connected:boolean;verificationUrl?:string;userCode?:string;message:string;model:string};
 
@@ -371,7 +375,8 @@ function PlannerDrawer({ open, onClose, onChanged, onLogin }: { open: boolean; o
   const data=useAcademicData();
   const [message,setMessage]=useState("");
   const [attachment,setAttachment]=useState<File|null>(null);
-  const [entries,setEntries]=useState<ChatEntry[]>([]);
+  const [threads,setThreads]=useState<ChatThread[]>([]);
+  const [activeThreadId,setActiveThreadId]=useState("");
   const [hydrated,setHydrated]=useState(false);
   const [loading,setLoading]=useState(false);
   const [savingId,setSavingId]=useState<string|null>(null);
@@ -381,8 +386,11 @@ function PlannerDrawer({ open, onClose, onChanged, onLogin }: { open: boolean; o
   const fileInput=useRef<HTMLInputElement>(null);
   const formRef=useRef<HTMLFormElement>(null);
 
-  useEffect(()=>{try{const stored=localStorage.getItem(CHAT_STORAGE_KEY);if(stored)setEntries(JSON.parse(stored) as ChatEntry[]);}catch{}finally{setHydrated(true);}},[]);
-  useEffect(()=>{if(hydrated)localStorage.setItem(CHAT_STORAGE_KEY,JSON.stringify(entries));},[entries,hydrated]);
+  const activeThread=useMemo(()=>threads.find(thread=>thread.id===activeThreadId)||threads[0],[threads,activeThreadId]);
+  const entries=useMemo(()=>activeThread?.entries||EMPTY_CHAT_ENTRIES,[activeThread]);
+  function setEntries(update:ChatEntry[]|((current:ChatEntry[])=>ChatEntry[])){setThreads(current=>current.map(thread=>thread.id!==activeThread?.id?thread:{...thread,entries:typeof update==="function"?update(thread.entries):update,updatedAt:new Date().toISOString()}));}
+  useEffect(()=>{try{const stored=localStorage.getItem(CHAT_STORAGE_KEY);if(stored){const parsed=JSON.parse(stored) as {threads?:ChatThread[];activeThreadId?:string};if(Array.isArray(parsed.threads)&&parsed.threads.length){setThreads(parsed.threads);setActiveThreadId(parsed.activeThreadId||parsed.threads[0].id);}else throw new Error("Invalid saved chats");}else{const legacy=localStorage.getItem(LEGACY_CHAT_STORAGE_KEY);const thread=newChatThread();if(legacy)thread.entries=JSON.parse(legacy) as ChatEntry[];setThreads([thread]);setActiveThreadId(thread.id);}}catch{const thread=newChatThread();setThreads([thread]);setActiveThreadId(thread.id);}finally{setHydrated(true);}},[]);
+  useEffect(()=>{if(hydrated&&threads.length)localStorage.setItem(CHAT_STORAGE_KEY,JSON.stringify({threads,activeThreadId}));},[threads,activeThreadId,hydrated]);
   useEffect(()=>{if(!open)return;requestAnimationFrame(()=>chatBody.current?.scrollTo({top:chatBody.current.scrollHeight,behavior:"smooth"}));},[entries,loading,open]);
 
   function chooseAttachment(file:File|null){
@@ -393,6 +401,9 @@ function PlannerDrawer({ open, onClose, onChanged, onLogin }: { open: boolean; o
     setAttachment(file);setComposerError("");
   }
 
+  function newChat(){if(loading)return;const thread=newChatThread();setThreads(current=>[thread,...current]);setActiveThreadId(thread.id);setMessage("");setAttachment(null);setComposerError("");}
+  function deleteChat(){if(loading||!activeThread)return;if(threads.length===1){setEntries([]);setMessage("");return;}const remaining=threads.filter(thread=>thread.id!==activeThread.id);setThreads(remaining);setActiveThreadId(remaining[0].id);setMessage("");setAttachment(null);setComposerError("");}
+
   async function submit(event:FormEvent){
     event.preventDefault();
     if(!data?.aiConfigured){setComposerError("Login with ChatGPT to use Alma AI.");onLogin();return;}
@@ -402,17 +413,18 @@ function PlannerDrawer({ open, onClose, onChanged, onLogin }: { open: boolean; o
     const userEntry:ChatEntry={id:makeChatId(),role:"user",text:text||`Review ${file?.name}`,attachmentName:file?.name,createdAt:new Date().toISOString()};
     const conversation=[...entries,userEntry];
     setEntries(conversation);setMessage("");setAttachment(null);setComposerError("");setLoading(true);
+    if(activeThread?.title==="New chat")setThreads(current=>current.map(thread=>thread.id===activeThread.id?{...thread,title:userEntry.text.slice(0,42)||"Assignment review"}:thread));
     if(fileInput.current)fileInput.current.value="";
     try{
       if(file){
-        const form=new FormData();form.set("description",text);form.set("file",file);form.set("source","chat");form.set("history",JSON.stringify(entries.slice(-6).map((entry)=>({role:entry.role,text:entry.text}))));
+        const form=new FormData();form.set("description",text);form.set("file",file);form.set("source","chat");form.set("history",JSON.stringify(entries.slice(-8).map((entry)=>({role:entry.role,text:entry.text}))));
         const response=await fetch("/api/assignments/analyze",{method:"POST",body:form});
         const result=await response.json();
         if(!response.ok)throw new Error(result.error||"Unable to read that assignment");
         const draft={...result.extraction,dueAt:(result.extraction.dueAt||new Date(Date.now()+7*86400000).toISOString()).slice(0,16)} as AssignmentDraft;
         setEntries(current=>[...current,{id:makeChatId(),role:"assistant",text:`I read ${file.name} and turned it into a structured assignment. Review the details below, then save it to your workspace.`,createdAt:new Date().toISOString(),aiUsed:result.aiUsed,assignment:{draft}}]);
       }else{
-        const history=entries.slice(-6).map((entry)=>({role:entry.role,text:entry.text}));
+        const history=entries.slice(-8).map((entry)=>({role:entry.role,text:entry.text}));
         const response=await fetch("/api/planner",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:text,history})});
         const result=await response.json();
         if(!response.ok)throw new Error(result.error||"Unable to respond");
@@ -438,12 +450,13 @@ function PlannerDrawer({ open, onClose, onChanged, onLogin }: { open: boolean; o
     finally{setSavingId(null);}
   }
 
-  function clearConversation(){setEntries([]);setMessage("");setAttachment(null);setComposerError("");localStorage.removeItem(CHAT_STORAGE_KEY);}
+  function clearConversation(){setEntries([]);setMessage("");setAttachment(null);setComposerError("");}
 
   return <>
     {open&&<button className="drawer-scrim" aria-label="Close planner" onClick={onClose}/>}
     <aside className={`planner-drawer ${open?"open":""}`} aria-label="Alma planner">
-      <div className="drawer-head"><div className="alma-orb"><Sparkles size={19}/></div><div><strong>Alma</strong><span><i className={data?.aiConfigured?"":"offline"}/>{data?.aiConfigured?`Your ChatGPT · ${data.aiModel||"Codex"}`:"Login with ChatGPT to use Alma AI"}</span></div>{entries.length>0&&<button onClick={clearConversation} aria-label="Clear conversation" title="Clear conversation"><Trash2 size={17}/></button>}<button onClick={onClose} aria-label="Close"><X size={20}/></button></div>
+      <div className="drawer-head"><div className="alma-orb"><Sparkles size={19}/></div><div><strong>Alma</strong><span><i className={data?.aiConfigured?"":"offline"}/>{data?.aiConfigured?`Your ChatGPT · ${data.aiModel||"Codex"}`:"Login with ChatGPT to use Alma AI"}</span></div><button onClick={newChat} disabled={loading} aria-label="New chat" title="New chat"><Plus size={17}/></button>{entries.length>0&&<button onClick={clearConversation} disabled={loading} aria-label="Clear conversation" title="Clear conversation"><Trash2 size={17}/></button>}<button onClick={onClose} aria-label="Close"><X size={20}/></button></div>
+      <div className="chat-threadbar"><select aria-label="Choose chat" value={activeThread?.id||""} onChange={event=>{setActiveThreadId(event.target.value);setMessage("");setAttachment(null);setComposerError("");}} disabled={loading}>{threads.map(thread=><option key={thread.id} value={thread.id}>{thread.title}</option>)}</select><button onClick={deleteChat} disabled={loading} aria-label="Delete chat" title="Delete chat"><Trash2 size={15}/></button></div>
       <div className="chat-body" ref={chatBody}>
         <div className="chat-date">TODAY</div>
         <div className="assistant-message"><p>Hi Shaurya — ask me to add, edit, complete, move, or delete assignments, tasks, and calendar events. I can also plan your workload.</p></div>

@@ -55,7 +55,8 @@ export async function planAcademicRetrieval({
         "Use conversationMessageCount to retain the fewest supplied recent messages needed to resolve a follow-up.",
         "Use includeGrades only for grades, progress, performance, or prioritization.",
         "Use includeHistoricalSemesters only for explicit historical, prerequisite, trend, or long-term degree questions.",
-        "For scheduling, infer a bounded affected date range.",
+        "For scheduling, retrieve the complete bounded period needed to compare the affected days, including incomplete work, fixed commitments, and existing study sessions.",
+        "If the student asks to clear, lighten, shift, spread, or redistribute work without naming destination days, infer a practical planning window instead of requesting their suggestions.",
       ].join(" "),
       prompt: [
         `Current date: ${now.toISOString()}`,
