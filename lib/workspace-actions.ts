@@ -33,8 +33,7 @@ export type WorkspaceActionPlan = {
 export type AppliedWorkspaceAction = { kind: WorkspaceActionKind; id: string; summary: string };
 
 export function looksLikeWorkspaceCommand(message: string) {
-  return /\b(add|create|make|schedule|book|put|edit|update|change|rename|move|reschedule|delete|remove|cancel|mark|complete|finish|postpone|push)\b/i.test(message)
-    && /\b(assignment|task|todo|to-do|event|calendar|class|meeting|appointment|practice|deadline|reminder)\b/i.test(message);
+  return /\b(add|create|make|schedule|book|put|edit|update|change|rename|move|reschedule|delete|remove|cancel|mark|complete|finish|postpone|push)\b/i.test(message);
 }
 
 export async function planWorkspaceActions({
@@ -68,7 +67,7 @@ export async function planWorkspaceActions({
       "Only include fields the student explicitly states or that are safe conventional defaults. Use medium priority and 60 estimated minutes for an assignment, and medium priority and 30 minutes for a task, when omitted.",
       "Assignments require title, courseId, and dueAt. Events require title, startAt, and endAt. Tasks require title and may omit a deadline.",
       "Interpret relative dates using the supplied current time and timezone, and return ISO 8601 timestamps with an explicit offset.",
-      "For an event with a start but no duration/end, ask a concise clarification instead of acting. Never guess which ambiguous existing record to edit or delete.",
+      "For a new event with a start but no duration/end, ask a concise clarification. When moving an existing event to a new start and no new end is requested, omit endAt so its existing duration is preserved. Never guess which ambiguous existing record to edit or delete.",
       "If required information is missing or a reference is ambiguous, set needsClarification true, put the question in message, and return no actions.",
       "If the request is not asking to mutate these records, return no actions, needsClarification false, and an empty message.",
       "When actions are present, message should be a short past-tense confirmation suitable to show after they are applied.",
@@ -163,7 +162,10 @@ export function applyWorkspaceActions(userId: string, actions: WorkspaceAction[]
     if (action.kind === "update_event") {
       const current = requireOwned(db, "calendar_events", action.targetId, userId);
       const startAt = action.startAt === null ? String(current.start_at) : validDate(action.startAt) ? new Date(action.startAt).toISOString() : (() => { throw new Error("The event start time is invalid."); })();
-      const endAt = action.endAt === null ? String(current.end_at) : validDate(action.endAt) ? new Date(action.endAt).toISOString() : (() => { throw new Error("The event end time is invalid."); })();
+      const oldDuration = +new Date(String(current.end_at)) - +new Date(String(current.start_at));
+      const endAt = action.endAt === null
+        ? action.startAt === null ? String(current.end_at) : new Date(+new Date(startAt) + oldDuration).toISOString()
+        : validDate(action.endAt) ? new Date(action.endAt).toISOString() : (() => { throw new Error("The event end time is invalid."); })();
       if (+new Date(endAt) <= +new Date(startAt)) throw new Error("Event end time must be after its start time.");
       const type = ["class", "personal", "deadline"].includes(action.eventType || "") ? action.eventType : current.type;
       db.prepare("UPDATE calendar_events SET course_id=?,title=?,start_at=?,end_at=?,type=? WHERE id=? AND user_id=?")

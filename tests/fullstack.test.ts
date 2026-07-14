@@ -286,12 +286,21 @@ test("chat workspace actions create, edit, complete, and delete user-scoped reco
     startAt: start.toISOString(), endAt: end.toISOString(), status: null, priority: null, estimatedMinutes: null, progress: null, eventType: "personal",
   }]);
   assert.ok(getAcademicData("student-test").events.some((item) => item.id === event[0].id));
+  const movedStart = new Date(+start + 86_400_000);
+  applyWorkspaceActions("student-test", [{
+    kind: "update_event", targetId: event[0].id, courseId: null, title: null, description: null, dueAt: null,
+    startAt: movedStart.toISOString(), endAt: null, status: null, priority: null, estimatedMinutes: null, progress: null, eventType: null,
+  }]);
+  const moved = getAcademicData("student-test").events.find((item) => item.id === event[0].id)!;
+  assert.equal(moved.startAt, movedStart.toISOString());
+  assert.equal(+new Date(moved.endAt) - +new Date(moved.startAt), 3_600_000);
   applyWorkspaceActions("student-test", [{
     kind: "delete_event", targetId: event[0].id, courseId: null, title: null, description: null, dueAt: null,
     startAt: null, endAt: null, status: null, priority: null, estimatedMinutes: null, progress: null, eventType: null,
   }]);
   assert.equal(getAcademicData("student-test").events.some((item) => item.id === event[0].id), false);
 
+  getDb().prepare("INSERT INTO users (id,name) VALUES (?,?)").run("another-student", "Another Student");
   assert.throws(() => applyWorkspaceActions("another-student", [{
     kind: "delete_task", targetId: created[0].id, courseId: null, title: null, description: null, dueAt: null,
     startAt: null, endAt: null, status: null, priority: null, estimatedMinutes: null, progress: null, eventType: null,
