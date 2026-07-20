@@ -27,7 +27,11 @@ const { getCodexAuthStatus } = await import("../lib/codex");
 const { applyWorkspaceActions, looksLikeWorkspaceCommand } = await import("../lib/workspace-actions");
 const { extractDocument } = await import("../app/api/assignments/analyze/route");
 const { POST: createAssignment } = await import("../app/api/assignments/route");
+const { DELETE: deleteAssignmentRecord } = await import("../app/api/assignments/[id]/route");
 const { POST: createNote } = await import("../app/api/notes/route");
+const { GET: listTaskRecords, POST: createTaskRecord } = await import("../app/api/tasks/route");
+const { GET: getTaskRecord, PATCH: updateTaskRecord, DELETE: deleteTaskRecord } = await import("../app/api/tasks/[id]/route");
+const { GET: listFocusSessionRecords, DELETE: clearFocusSessionRecords } = await import("../app/api/study-sessions/route");
 const { POST: applyPlannerChanges } = await import("../app/api/planner/apply/route");
 const { POST: askPlanner } = await import("../app/api/planner/route");
 const { POST: analyzeAssignment } = await import("../app/api/assignments/analyze/route");
@@ -49,6 +53,60 @@ test("persists notes in the SQL database", () => {
   db.prepare("INSERT INTO notes (id,user_id,course_id,title,content) VALUES (?,?,?,?,?)").run("note-test","student-test","course-phy","Persisted note","Saved content");
   const data = getAcademicData("student-test");
   assert.equal(data.notes.find((note) => note.id === "note-test")?.content, "Saved content");
+});
+
+test("task API supports ID-based query, add, get, edit, complete, and delete", async () => {
+  const headers = { "content-type": "application/json", "x-alma-user": "student-test" };
+  const createdResponse = await createTaskRecord(new Request("http://alma.test/api/tasks", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ title: "Email the tutor", description: "Ask about office hours", priority: "high", estimatedMinutes: 10 }),
+  }));
+  assert.equal(createdResponse.status, 201);
+  const created = (await createdResponse.json()).task;
+  assert.ok(created.id);
+  assert.equal(created.title, "Email the tutor");
+
+  const listResponse = await listTaskRecords(new Request("http://alma.test/api/tasks?query=tutor&status=pending", { headers }));
+  assert.equal(listResponse.status, 200);
+  const listed = (await listResponse.json()).tasks;
+  assert.deepEqual(listed.map((task: { id: string }) => task.id), [created.id]);
+
+  const params = { params: Promise.resolve({ id: created.id as string }) };
+  const getResponse = await getTaskRecord(new Request(`http://alma.test/api/tasks/${created.id}`, { headers }), params);
+  assert.equal((await getResponse.json()).task.description, "Ask about office hours");
+
+  const updateResponse = await updateTaskRecord(new Request(`http://alma.test/api/tasks/${created.id}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ title: "Email my tutor", status: "completed", dueAt: null }),
+  }), params);
+  const updated = (await updateResponse.json()).task;
+  assert.equal(updated.title, "Email my tutor");
+  assert.equal(updated.status, "completed");
+
+  const deleteResponse = await deleteTaskRecord(new Request(`http://alma.test/api/tasks/${created.id}`, { method: "DELETE", headers }), params);
+  assert.equal(deleteResponse.status, 200);
+  assert.equal((await deleteResponse.json()).deleted, true);
+  assert.equal(getAcademicData("student-test").tasks.some((task) => task.id === created.id), false);
+});
+
+test("calendar focus-session API lists and clears planned work by India calendar date", async () => {
+  const db = getDb();
+  db.prepare("INSERT INTO study_sessions (id,user_id,assignment_id,title,start_at,end_at,status,plan_id) VALUES (?,?,?,?,?,?,'planned',?)")
+    .run("date-clear-session", "student-test", "asg-phy", "Quantum Mechanics Test", "2026-08-01T04:30:00.000Z", "2026-08-01T05:20:00.000Z", "date-clear-plan");
+  db.prepare("INSERT INTO study_sessions (id,user_id,assignment_id,title,start_at,end_at,status,plan_id) VALUES (?,?,?,?,?,?,'planned',?)")
+    .run("date-keep-session", "student-test", "asg-phy", "Quantum Mechanics Test", "2026-08-02T04:30:00.000Z", "2026-08-02T05:20:00.000Z", "date-clear-plan");
+  const headers = { "x-alma-user": "student-test" };
+  const listResponse = await listFocusSessionRecords(new Request("http://alma.test/api/study-sessions?date=2026-08-01", { headers }));
+  const listed = (await listResponse.json()).sessions;
+  assert.deepEqual(listed.map((session: { id: string }) => session.id), ["date-clear-session"]);
+
+  const deleteResponse = await clearFocusSessionRecords(new Request("http://alma.test/api/study-sessions?date=2026-08-01", { method: "DELETE", headers }));
+  const result = await deleteResponse.json();
+  assert.equal(result.deleted, 1);
+  assert.equal(db.prepare("SELECT id FROM study_sessions WHERE id=?").get("date-clear-session"), undefined);
+  assert.ok(db.prepare("SELECT id FROM study_sessions WHERE id=?").get("date-keep-session"));
 });
 
 test("builds conflict-free sessions before assignment deadlines", () => {
@@ -280,8 +338,8 @@ test("assignment upload extraction, assignment save, note save, and schedule app
   const noteId = String((await noteResponse.json()).id);
   assert.ok(getDb().prepare("SELECT id FROM notes WHERE user_id=? AND id=?").get("student-test", noteId));
 
-  const plan = buildSchedule(getAcademicData("student-test"), { focusIds: [assignmentId] }).slice(0, 1);
-  assert.equal(plan.length, 1);
+  const sessionStart = new Date(Date.now() + 2 * 86_400_000);
+  const plan = [{ id: "route-session-1", assignmentId, title: "Saved through assignment API", startAt: sessionStart.toISOString(), endAt: new Date(+sessionStart + 30 * 60_000).toISOString(), reason: "Regression test" }];
   const applyResponse = await applyPlannerChanges(new Request("http://alma.test/api/planner/apply", {
     method: "POST",
     headers: { "content-type": "application/json", "x-alma-user": "student-test" },
@@ -289,6 +347,24 @@ test("assignment upload extraction, assignment save, note save, and schedule app
   }));
   assert.equal(applyResponse.status, 200);
   assert.ok(getDb().prepare("SELECT id FROM study_sessions WHERE user_id=? AND plan_id=?").get("student-test", "route-regression-plan"));
+
+  const replacementStart = new Date(+sessionStart + 60 * 60_000);
+  const replacement = [{ id: "route-session-2", assignmentId, title: "Saved through assignment API", startAt: replacementStart.toISOString(), endAt: new Date(+replacementStart + 30 * 60_000).toISOString(), reason: "Replacement test" }];
+  await applyPlannerChanges(new Request("http://alma.test/api/planner/apply", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-alma-user": "student-test" },
+    body: JSON.stringify({ planId: "route-replacement-plan", changes: replacement }),
+  }));
+  assert.equal((getDb().prepare("SELECT COUNT(*) as count FROM study_sessions WHERE user_id=? AND plan_id=?").get("student-test", "route-regression-plan") as { count: number }).count, 0);
+
+  const deleteResponse = await deleteAssignmentRecord(new Request(`http://alma.test/api/assignments/${assignmentId}`, {
+    method: "DELETE",
+    headers: { "x-alma-user": "student-test" },
+  }), { params: Promise.resolve({ id: assignmentId }) });
+  const deleted = await deleteResponse.json();
+  assert.equal(deleted.deleted, true);
+  assert.equal(deleted.removedStudySessions, 1);
+  assert.equal((getDb().prepare("SELECT COUNT(*) as count FROM study_sessions WHERE assignment_id=?").get(assignmentId) as { count: number }).count, 0);
 });
 
 test("chat workspace actions create, edit, complete, and delete user-scoped records", () => {

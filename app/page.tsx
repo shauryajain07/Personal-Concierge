@@ -122,13 +122,30 @@ function Topbar({ title, openMenu, openPlanner, openAdd, openAuth, aiConfigured 
   );
 }
 
-function TodayView({ openPlanner }: { openPlanner: () => void }) {
+function TodayView({ openPlanner, onChanged }: { openPlanner: () => void; onChanged: () => Promise<void> }) {
   const data = useAcademicData();
   const [now] = useState(() => Date.now());
+  const [busyTaskId,setBusyTaskId]=useState<string|null>(null);
+  const [taskError,setTaskError]=useState("");
+  const currentDate = useMemo(() => new Date(now).toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" }), [now]);
   const openAssignments = data?.assignments.filter((assignment) => assignment.status !== "completed") ?? [];
   const weekEnd = now + 7 * 86400000;
   const dueThisWeek = openAssignments.filter((assignment) => +new Date(assignment.dueAt) <= weekEnd);
   const remainingMinutes = openAssignments.reduce((total, assignment) => total + Math.max(0, Math.round(assignment.estimatedMinutes * (1 - assignment.progress / 100)) - assignment.actualMinutes), 0);
+  async function toggleTask(task:AcademicData["tasks"][number]){
+    if(busyTaskId)return;
+    setBusyTaskId(task.id);setTaskError("");
+    try{const response=await fetch(`/api/tasks/${task.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:task.status==="completed"?"pending":"completed"})});const result=await response.json();if(!response.ok)throw new Error(result.error||"Unable to update task");await onChanged();}
+    catch(problem){setTaskError(problem instanceof Error?problem.message:"Unable to update task");}
+    finally{setBusyTaskId(null);}
+  }
+  async function removeTask(task:AcademicData["tasks"][number]){
+    if(busyTaskId||!window.confirm(`Delete “${task.title}”? This cannot be undone.`))return;
+    setBusyTaskId(task.id);setTaskError("");
+    try{const response=await fetch(`/api/tasks/${task.id}`,{method:"DELETE"});const result=await response.json();if(!response.ok)throw new Error(result.error||"Unable to delete task");await onChanged();}
+    catch(problem){setTaskError(problem instanceof Error?problem.message:"Unable to delete task");}
+    finally{setBusyTaskId(null);}
+  }
   const todayItems = useMemo(() => {
     if (!data) return schedule;
     const events = [
@@ -141,7 +158,7 @@ function TodayView({ openPlanner }: { openPlanner: () => void }) {
     <div className="page today-page">
       <section className="welcome-row">
         <div>
-          <div className="eyebrow">TUESDAY, JULY 14</div>
+          <div className="eyebrow">{currentDate}</div>
           <h1>Good morning, Shaurya.</h1>
           <p>You have a focused day ahead. Your plan leaves <strong>2h 15m</strong> of breathing room.</p>
         </div>
@@ -195,11 +212,16 @@ function TodayView({ openPlanner }: { openPlanner: () => void }) {
 
           <article className="panel checklist-panel">
             <div className="panel-head"><div><h2>Quick wins</h2><p>Small tasks for open moments</p></div><span className="count-pill">{data?.tasks.filter(task=>task.status==="completed").length||0}/{data?.tasks.length||0}</span></div>
-            {(data?.tasks.length?data.tasks.slice(0,5):[{id:"example-1",title:"Ask Alma to add a task",status:"pending",estimatedMinutes:5}]).map((task) => (
-              <button className={`check-row ${task.status === "completed" ? "checked" : ""}`} key={task.id} onClick={async()=>{if(task.id.startsWith("example-")){openPlanner();return;}await fetch(`/api/tasks/${task.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:task.status==="completed"?"pending":"completed"})});location.reload();}}>
-                <span className="checkbox">{task.status === "completed" && <Check size={13} />}</span><span>{task.title}</span><small>{task.estimatedMinutes} min</small>
-              </button>
+            {(data?.tasks.length?data.tasks.slice(0,5):[{id:"example-1",courseId:null,title:"Ask Alma to add a task",description:"",dueAt:null,status:"pending" as const,priority:"medium" as const,estimatedMinutes:5,createdAt:"",updatedAt:""}]).map((task) => (
+              <div className={`check-row ${task.status === "completed" ? "checked" : ""} ${busyTaskId===task.id?"busy":""}`} key={task.id}>
+                <button className="task-toggle" type="button" disabled={busyTaskId===task.id} onClick={()=>{if(task.id.startsWith("example-")){openPlanner();return;}void toggleTask(task);}} aria-label={`${task.status==="completed"?"Reopen":"Complete"} ${task.title}`}>
+                  <span className="checkbox">{task.status === "completed" && <Check size={13} />}</span><span className="task-title">{task.title}</span>
+                </button>
+                <small>{task.estimatedMinutes} min</small>
+                {!task.id.startsWith("example-")&&<button className="task-delete" type="button" disabled={busyTaskId===task.id} onClick={()=>void removeTask(task)} aria-label={`Delete ${task.title}`} title="Delete task"><Trash2 size={14}/></button>}
+              </div>
             ))}
+            {taskError&&<div className="task-error" role="alert">{taskError}</div>}
           </article>
         </div>
       </section>
@@ -213,10 +235,10 @@ function CalendarView({openEvent}:{openEvent:()=>void}) {
   const monday=useMemo(()=>{const date=new Date(today);const day=date.getDay();date.setDate(date.getDate()-(day===0?6:day-1));date.setHours(0,0,0,0);return date;},[today]);
   const days=useMemo(()=>Array.from({length:5},(_,index)=>{const date=new Date(monday);date.setDate(date.getDate()+index);return date;}),[monday]);
   const items=useMemo(()=>{if(!data)return[];return [...data.events.map((event)=>({...event,kind:"event"})),...data.studySessions.map((session)=>({...session,kind:"session",courseId:null,type:"focus"}))].map((item)=>{const start=new Date(item.startAt);const end=new Date(item.endAt);const day=Math.floor((+new Date(start.getFullYear(),start.getMonth(),start.getDate())-+monday)/86400000)+1;const hour=start.getHours()+start.getMinutes()/60;const courseIndex=data.courses.findIndex((course)=>course.id===item.courseId);return{...item,day,top:58+(hour-8)*33,height:Math.max(28,(+end-+start)/3600000*33),color:item.kind==="session"?"coral":item.type==="personal"?"blue":CALENDAR_COLORS[Math.max(0,courseIndex)%CALENDAR_COLORS.length]};}).filter((item)=>item.day>=1&&item.day<=5);},[data,monday]);
-  const focusMinutes=data?.studySessions.reduce((sum,session)=>sum+(+new Date(session.endAt)-+new Date(session.startAt))/60000,0)||0;
+  const focusMinutes=items.filter((item)=>item.kind==="session").reduce((sum,item)=>sum+(+new Date(item.endAt)-+new Date(item.startAt))/60000,0);
   return (
     <div className="page calendar-page">
-      <div className="page-heading"><div><div className="eyebrow">{days[0].toLocaleDateString([],{month:"long",day:"numeric"}).toUpperCase()}–{days[4].toLocaleDateString([],{month:"long",day:"numeric",year:"numeric"}).toUpperCase()}</div><h1>Your week</h1><p>Classes, commitments, and focused work in one place.</p></div><div className="heading-actions"><button><ChevronLeft size={17} /></button><button className="today-chip">Today</button><button><ChevronRight size={17} /></button><button className="primary-small" onClick={openEvent}><Plus size={17} /> New event</button></div></div>
+      <div className="page-heading"><div><div className="eyebrow">{days[0].toLocaleDateString([],{month:"long",day:"numeric"})}–{days[4].toLocaleDateString([],{month:"long",day:"numeric",year:"numeric"})}</div><h1>Your week</h1><p>Classes, commitments, and focused work in one place.</p></div><div className="heading-actions"><button><ChevronLeft size={17} /></button><button className="today-chip">Today</button><button><ChevronRight size={17} /></button><button className="primary-small" onClick={openEvent}><Plus size={17} /> New event</button></div></div>
       <div className="calendar-summary">
         <span><i className="dot purple-dot" /> {data?.events.filter((event)=>event.type==="class").length||0} classes</span><span><i className="dot coral-dot" /> {Math.round(focusMinutes/60*10)/10}h focused work</span><span><i className="dot blue-dot" /> {data?.events.filter((event)=>event.type==="personal").length||0} personal</span><strong>{items.length} blocks this week</strong>
       </div>
@@ -242,7 +264,7 @@ function CoursesView({openCourse}:{openCourse:()=>void}) {
   const courseRows = data?.courses ?? [];
   return (
     <div className="page courses-page">
-      <div className="page-heading"><div><div className="eyebrow">YEAR 2 · SEMESTER 3</div><h1>Your courses</h1><p>Everything you’re learning, organized by term.</p></div><button className="primary-small" onClick={openCourse}><Plus size={17} /> Add course</button></div>
+      <div className="page-heading"><div><div className="eyebrow">Year 2 · Semester 3</div><h1>Your courses</h1><p>Everything you’re learning, organized by term.</p></div><button className="primary-small" onClick={openCourse}><Plus size={17} /> Add course</button></div>
       <div className="semester-track">
         {[1,2,3,4,5,6,7,8].map((n) => <button key={n} className={n === 3 ? "active" : n < 3 ? "complete" : ""}><span>{n < 3 ? <Check size={14} /> : n}</span><small>SEM {n}</small></button>)}
       </div>
@@ -260,14 +282,23 @@ function CoursesView({openCourse}:{openCourse:()=>void}) {
   );
 }
 
-function AssignmentsView({ openAdd }: { openAdd: (mode?: "write"|"upload") => void }) {
+function AssignmentsView({ openAdd, onChanged }: { openAdd: (mode?: "write"|"upload") => void; onChanged: () => Promise<void> }) {
   const data = useAcademicData();
   const [filter, setFilter] = useState("All");
   const [now] = useState(() => Date.now());
+  const [deletingId,setDeletingId]=useState<string|null>(null);
+  const [deleteError,setDeleteError]=useState("");
   const rows = (data?.assignments ?? []).filter((assignment) => filter === "All" || assignment.status.replace("_"," ") === filter.toLowerCase());
+  async function removeAssignment(assignment:AcademicData["assignments"][number]){
+    if(deletingId||!window.confirm(`Delete “${assignment.title}”? Its planned calendar sessions will also be removed.`))return;
+    setDeletingId(assignment.id);setDeleteError("");
+    try{const response=await fetch(`/api/assignments/${assignment.id}`,{method:"DELETE"});const result=await response.json();if(!response.ok)throw new Error(result.error||"Unable to delete assignment");await onChanged();}
+    catch(problem){setDeleteError(problem instanceof Error?problem.message:"Unable to delete assignment");}
+    finally{setDeletingId(null);}
+  }
   return (
     <div className="page assignments-page">
-      <div className="page-heading"><div><div className="eyebrow">SEMESTER 3</div><h1>Assignments</h1><p>Plan the work, then work the plan.</p></div><button className="primary-small" onClick={()=>openAdd("write")}><Plus size={17} /> Add assignment</button></div>
+      <div className="page-heading"><div><div className="eyebrow">Semester 3</div><h1>Assignments</h1><p>Plan the work, then work the plan.</p></div><button className="primary-small" onClick={()=>openAdd("write")}><Plus size={17} /> Add assignment</button></div>
       <div className="filter-row"><div>{["All", "In progress", "Not started", "Completed"].map((f) => <button key={f} className={filter === f ? "active" : ""} onClick={() => setFilter(f)}>{f}{f === "All" && <b>{data?.assignments.length ?? 0}</b>}</button>)}</div><button className="filter-search"><Search size={16} /> Search assignments</button></div>
       <article className="assignment-list">
         <div className="assignment-head"><span>ASSIGNMENT</span><span>DUE</span><span>WORK LEFT</span><span>PROGRESS</span><span /></div>
@@ -280,9 +311,10 @@ function AssignmentsView({ openAdd }: { openAdd: (mode?: "write"|"upload") => vo
             <div><strong>{new Date(assignment.dueAt).toLocaleDateString([], {month:"short",day:"numeric"})}</strong><small>{Math.max(0,Math.ceil((+new Date(assignment.dueAt)-now)/86400000))} days</small></div>
             <div><strong>{Math.floor(remaining/60)}h {remaining%60}m</strong><small>estimated</small></div>
             <div className="table-progress"><span><i style={{ width: `${assignment.progress}%`, background: course?.color || "#6258df" }} /></span><b>{assignment.progress}%</b></div>
-            <button className="plain-icon"><MoreHorizontal size={18} /></button>
+            <button className="task-delete assignment-delete" type="button" disabled={deletingId===assignment.id} onClick={()=>void removeAssignment(assignment)} aria-label={`Delete ${assignment.title}`} title="Delete assignment"><Trash2 size={15}/></button>
           </div>
         )})}
+        {deleteError&&<div className="assignment-delete-error" role="alert">{deleteError}</div>}
       </article>
       <div className="upload-card"><div className="upload-icon"><Upload size={20} /></div><div><strong>Drop in an assignment brief</strong><p>Upload a PDF and Alma will extract the requirements, estimate the work, and propose a plan.</p></div><button onClick={()=>openAdd("upload")}>Choose PDF</button></div>
     </div>
@@ -309,7 +341,7 @@ function NotesView({ onChanged }: { onChanged: () => Promise<void> }) {
   function choose(note:Note){setSelectedId(note.id);setTitle(note.title);setContent(note.content);setCourseId(note.courseId||"");}
 
   return <div className="page notes-page">
-    <div className="page-heading"><div><div className="eyebrow">KNOWLEDGE BASE</div><h1>Course notes</h1><p>Write, organize, and give Alma the context behind your coursework.</p></div><button className="primary-small" onClick={createNote}><Plus size={17}/> New note</button></div>
+    <div className="page-heading"><div><div className="eyebrow">Knowledge base</div><h1>Course notes</h1><p>Write, organize, and give Alma the context behind your coursework.</p></div><button className="primary-small" onClick={createNote}><Plus size={17}/> New note</button></div>
     <section className="notes-workspace">
       <aside className="notes-list">
         <div className="notes-search"><Search size={16}/><input value={query} onChange={(event)=>setQuery(event.target.value)} placeholder="Search notes..."/></div>
@@ -334,7 +366,7 @@ function ProgressView({openGrade}:{openGrade:()=>void}) {
   const courseRows = data?.courses ?? [];
   return (
     <div className="page progress-page">
-      <div className="page-heading"><div><div className="eyebrow">SEMESTER 3</div><h1>Progress</h1><p>A clear view of your effort, consistency, and results.</p></div><div className="heading-actions"><button className="period-select">This semester <ChevronDown size={16} /></button><button className="primary-small" onClick={openGrade}><Plus size={17}/> Add score</button></div></div>
+      <div className="page-heading"><div><div className="eyebrow">Semester 3</div><h1>Progress</h1><p>A clear view of your effort, consistency, and results.</p></div><div className="heading-actions"><button className="period-select">This semester <ChevronDown size={16} /></button><button className="primary-small" onClick={openGrade}><Plus size={17}/> Add score</button></div></div>
       <section className="progress-metrics"><article><small>CURRENT GPA</small><strong>3.72</strong><span className="up">↗ 0.14</span><p>from last semester</p></article><article><small>FOCUS HOURS</small><strong>42.5</strong><span className="up">↗ 12%</span><p>this semester</p></article><article><small>ON-TIME RATE</small><strong>91%</strong><span className="up">↗ 6%</span><p>14 of 15 submitted</p></article></section>
       <section className="progress-grid">
         <article className="panel chart-panel"><div className="panel-head"><div><h2>Focus consistency</h2><p>Planned time completed each week</p></div><span className="legend"><i /> Completion rate</span></div><div className="bar-chart">{bars.map((b,i) => <div key={i}><span>{b}%</span><i style={{ height: `${b}%` }} /><small>W{i+1}</small></div>)}</div></article>
@@ -532,10 +564,10 @@ export default function HomePage() {
         <Topbar title={title} openMenu={() => setMenu(true)} openPlanner={() => setPlanner(true)} openAdd={() => setAdd("write")} openAuth={()=>setAuth(true)} aiConfigured={data.aiConfigured}/>
         {!data.aiConfigured&&<div className="ai-config-banner"><Sparkles size={15}/><span><strong>Connect your own ChatGPT.</strong> Alma will use your Codex access—not the machine owner’s account.</span><button onClick={()=>setAuth(true)}>Connect ChatGPT</button></div>}
         <main>
-          {view === "Today" && <TodayView openPlanner={() => setPlanner(true)} />}
+          {view === "Today" && <TodayView openPlanner={() => setPlanner(true)} onChanged={refresh} />}
           {view === "Calendar" && <CalendarView openEvent={()=>setRecord("event")} />}
           {view === "Courses" && <CoursesView openCourse={()=>setRecord("course")} />}
-          {view === "Assignments" && <AssignmentsView openAdd={(mode="write") => setAdd(mode)} />}
+          {view === "Assignments" && <AssignmentsView openAdd={(mode="write") => setAdd(mode)} onChanged={refresh} />}
           {view === "Notes" && <NotesView onChanged={refresh} />}
           {view === "Progress" && <ProgressView openGrade={()=>setRecord("grade")} />}
         </main>

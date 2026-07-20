@@ -11,7 +11,7 @@ import {
 } from "@/lib/retrieval";
 import { planAcademicRetrieval } from "@/lib/retrieval-pipeline";
 import { buildSchedule } from "@/lib/scheduler";
-import { applyWorkspaceActions, looksLikeWorkspaceCommand, planWorkspaceActions } from "@/lib/workspace-actions";
+import { applyWorkspaceActions, looksLikeWorkspaceCommand, planWorkspaceActions, runTaskTools } from "@/lib/workspace-actions";
 
 export const runtime = "nodejs";
 
@@ -39,6 +39,24 @@ export async function POST(request: Request) {
     const history = Array.isArray(body.history) ? body.history.slice(-12) : [];
     const now = new Date();
     if (codexSessionId && looksLikeWorkspaceCommand(message)) {
+      try {
+        const taskResult = await runTaskTools({ userId, message, history, now, codexSessionId });
+        if (taskResult?.handled) {
+          return Response.json({
+            planId: randomUUID(),
+            action: taskResult.needsClarification ? "clarification" : "workspace_update",
+            intent: "answer",
+            message: taskResult.message,
+            changes: [],
+            atRisk: [],
+            appliedActions: taskResult.changed ? [{ kind: "task_tool", summary: taskResult.message }] : [],
+            aiUsed: true,
+          });
+        }
+      } catch {
+        // Keep the existing structured-action path as a fallback if task tools
+        // cannot start, while assignments and events continue to use it normally.
+      }
       const actionPlan = await planWorkspaceActions({ userId, message, history, now, codexSessionId });
       if (actionPlan?.needsClarification) {
         return Response.json({ planId: randomUUID(), action: "clarification", intent: "answer", message: actionPlan.message, changes: [], atRisk: [], appliedActions: [], aiUsed: true });

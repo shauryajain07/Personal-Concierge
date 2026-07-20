@@ -5,8 +5,8 @@ import type { AcademicData, Assignment, CalendarEvent, Course, Grade, Note, Stud
 
 const globalForDb = globalThis as unknown as { almaDb?: Database.Database };
 
-function databasePath() {
-  return join(process.cwd(), "data", "alma.db");
+export function databasePath() {
+  return process.env.ALMA_DB_PATH || join(process.cwd(), "data", "alma.db");
 }
 
 export function getDb() {

@@ -14,7 +14,6 @@ export function buildSchedule(data: Pick<AcademicData, "assignments" | "events" 
   const horizon = requestedEnd && Number.isFinite(+requestedEnd) ? requestedEnd : new Date(+now + 14 * 86_400_000);
   const busy: Interval[] = [
     ...data.events.map((event) => ({ start: +new Date(event.startAt), end: +new Date(event.endAt) })),
-    ...data.studySessions.filter((session) => session.status === "planned").map((session) => ({ start: +new Date(session.startAt), end: +new Date(session.endAt) })),
   ];
   const focus = new Set(options?.focusIds || []);
   const assignments = data.assignments
@@ -60,6 +59,14 @@ export function buildSchedule(data: Pick<AcademicData, "assignments" | "events" 
 export function applySchedule(userId: string, changes: PlanChange[], planId: string) {
   const db = getDb();
   const insert = db.prepare("INSERT INTO study_sessions (id,user_id,assignment_id,title,start_at,end_at,status,plan_id) VALUES (?,?,?,?,?,?,'planned',?)");
-  const tx = db.transaction(() => changes.forEach((change) => insert.run(change.id,userId,change.assignmentId,change.title,change.startAt,change.endAt,planId)));
+  const ownsAssignment = db.prepare("SELECT 1 FROM assignments WHERE id=? AND user_id=?");
+  const clearFuturePlan = db.prepare("DELETE FROM study_sessions WHERE user_id=? AND status='planned' AND end_at>?");
+  const tx = db.transaction(() => {
+    for (const change of changes) {
+      if (!ownsAssignment.get(change.assignmentId, userId)) throw new Error("A scheduled assignment is not in this workspace.");
+    }
+    clearFuturePlan.run(userId, new Date().toISOString());
+    changes.forEach((change) => insert.run(change.id,userId,change.assignmentId,change.title,change.startAt,change.endAt,planId));
+  });
   tx();
 }

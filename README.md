@@ -35,6 +35,18 @@ No OpenAI API key is read or required. The server removes API-key and access-tok
 
 Alma defaults to `gpt-5.6-luna` with medium reasoning for the retrieval and answer stages. Set `ALMA_CODEX_MODEL` only when a deployment needs a different Codex model.
 
+## Task API and Codex tools
+
+Standalone tasks use one user-scoped service shared by the HTTP API, the planner fallback, and Alma's Codex MCP server. Every read or mutation is constrained by both task ID and the current user.
+
+- `GET /api/tasks?query=&status=&courseId=&limit=` lists or searches tasks and returns their IDs.
+- `POST /api/tasks` adds a task and returns the complete saved record.
+- `GET /api/tasks/:id` gets one task.
+- `PATCH /api/tasks/:id` or `PUT /api/tasks/:id` edits, completes, or reopens one task.
+- `DELETE /api/tasks/:id` permanently deletes one task.
+
+For workspace requests, Codex receives task tools, assignment lookup/deletion tools, and `list_focus_sessions` / `clear_focus_sessions` for date-specific calendar cleanup. It must resolve natural-language references before a deletion and ask for clarification when a match is ambiguous. The Codex thread remains filesystem-read-only and offline; only the scoped MCP tools can modify records.
+
 ## Relevance-based AI retrieval
 
 Planner chat and chat assignment analysis use two stages:

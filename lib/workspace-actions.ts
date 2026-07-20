@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { codexJson, workspaceActionSchema } from "./codex";
 import { getAcademicData, getDb, seedUser } from "./db";
+import { createTask as createTaskRecord, deleteTask as deleteTaskRecord, TaskStoreError, updateTask as updateTaskRecord, type UpdateTaskInput } from "./task-store";
 import type { ConversationMessage } from "./retrieval";
 
 export type WorkspaceActionKind =
@@ -32,8 +33,66 @@ export type WorkspaceActionPlan = {
 
 export type AppliedWorkspaceAction = { kind: WorkspaceActionKind; id: string; summary: string };
 
+export type TaskToolPlan = {
+  handled: boolean;
+  needsClarification: boolean;
+  changed: boolean;
+  message: string;
+};
+
+const taskToolPlanSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["handled", "needsClarification", "changed", "message"],
+  properties: {
+    handled: { type: "boolean" },
+    needsClarification: { type: "boolean" },
+    changed: { type: "boolean" },
+    message: { type: "string" },
+  },
+};
+
 export function looksLikeWorkspaceCommand(message: string) {
   return /\b(add|create|make|schedule|book|put|edit|update|change|rename|move|reschedule|delete|remove|cancel|mark|complete|finish|postpone|push)\b/i.test(message);
+}
+
+export async function runTaskTools({
+  userId,
+  message,
+  history,
+  now = new Date(),
+  codexSessionId,
+}: {
+  userId: string;
+  message: string;
+  history: ConversationMessage[];
+  now?: Date;
+  codexSessionId: string;
+}) {
+  return codexJson<TaskToolPlan>({
+    schema: taskToolPlanSchema,
+    system: [
+      "Handle explicit requests to list, inspect, add, edit, complete, reopen, or delete standalone tasks/todos, requests to delete academic assignments, and requests to list or clear focused-work blocks on a calendar date.",
+      "Use the Alma tools for every handled read or write. Never invent an ID and never claim a change unless its tool call succeeded.",
+      "For edits and deletes described by title, first call list_tasks with a concise search query. If no standalone task matches, call list_assignments because students may call an assignment or its calendar focus work a task.",
+      "If exactly one record across the relevant type matches, use its returned ID. If multiple plausibly match, do not mutate anything; ask one concise clarification question.",
+      "Use edit_task with status=completed to complete a task and status=pending to reopen it.",
+      "Deleting an assignment with delete_assignment also removes its linked calendar focus sessions. Do not use delete_task for a title returned only by list_assignments.",
+      "Orange focused-work blocks on the calendar are study sessions. If the student asks to delete, clear, or remove tasks/work on a specific date, first call list_focus_sessions for that YYYY-MM-DD date, then call clear_focus_sessions. This must not delete the underlying assignments.",
+      "Interpret relative dates from the supplied current time in Asia/Kolkata. A request such as 'clear tasks on the 16th' refers to calendar focus sessions on that date, not records whose deadlines happen to be on that date.",
+      "If the request is to add or edit an assignment, or is about an event, schedule, note, grade, or general academic advice, call no tools and return handled=false so Alma's other workflow can handle it.",
+      "For a handled task request, make the requested tool calls now, then report a concise factual result.",
+      "Set changed=true only after at least one add_task, edit_task, or delete_task call succeeds. Set needsClarification=true only when user input is required before a safe task operation.",
+    ].join(" "),
+    prompt: [
+      `Current time: ${now.toISOString()}`,
+      "Timezone: Asia/Kolkata",
+      `Recent conversation: ${JSON.stringify(history.slice(-6))}`,
+      `Student request: ${message}`,
+    ].join("\n\n"),
+    sessionId: codexSessionId,
+    taskToolUserId: userId,
+  });
 }
 
 export async function planWorkspaceActions({
@@ -134,23 +193,43 @@ export function applyWorkspaceActions(userId: string, actions: WorkspaceAction[]
     }
     if (action.kind === "create_task") {
       if (!action.title?.trim()) throw new Error("A new task needs a title.");
-      const dueAt = action.dueAt === null ? null : validDate(action.dueAt) ? new Date(action.dueAt).toISOString() : (() => { throw new Error("The task deadline is invalid."); })();
-      db.prepare("INSERT INTO tasks (id,user_id,course_id,title,description,due_at,status,priority,estimated_minutes) VALUES (?,?,?,?,?,?,'pending',?,?)")
-        .run(id, userId, optionalCourse(db, action.courseId, userId), action.title.trim(), action.description || "", dueAt, priority(action.priority), Math.max(5, action.estimatedMinutes || 30));
-      return { kind: action.kind, id, summary: `Added task “${action.title.trim()}”` };
+      const task = createTaskRecord(userId, {
+        title: action.title,
+        description: action.description,
+        dueAt: action.dueAt,
+        courseId: action.courseId,
+        priority: priority(action.priority) as "low" | "medium" | "high",
+        estimatedMinutes: action.estimatedMinutes || 30,
+      });
+      return { kind: action.kind, id: task.id, summary: `Added task “${task.title}”` };
     }
     if (action.kind === "update_task") {
-      const current = requireOwned(db, "tasks", action.targetId, userId);
-      const dueAt = action.dueAt === null ? current.due_at : validDate(action.dueAt) ? new Date(action.dueAt).toISOString() : (() => { throw new Error("The task deadline is invalid."); })();
-      const status = ["pending", "completed"].includes(action.status || "") ? action.status : current.status;
-      db.prepare("UPDATE tasks SET course_id=?,title=?,description=?,due_at=?,status=?,priority=?,estimated_minutes=?,updated_at=? WHERE id=? AND user_id=?")
-        .run(action.courseId === null ? current.course_id : optionalCourse(db, action.courseId, userId), action.title?.trim() || current.title, action.description === null ? current.description : action.description, dueAt, status, priority(action.priority, String(current.priority)), action.estimatedMinutes === null ? current.estimated_minutes : Math.max(5, action.estimatedMinutes), new Date().toISOString(), action.targetId, userId);
-      return { kind: action.kind, id: action.targetId!, summary: `Updated task “${action.title?.trim() || current.title}”` };
+      if (!action.targetId) throw new Error("Alma could not identify the record to change.");
+      const input: UpdateTaskInput = {};
+      if (action.courseId !== null) input.courseId = action.courseId;
+      if (action.title !== null) input.title = action.title;
+      if (action.description !== null) input.description = action.description;
+      if (action.dueAt !== null) input.dueAt = action.dueAt;
+      if (["pending", "completed"].includes(action.status || "")) input.status = action.status as "pending" | "completed";
+      if (["low", "medium", "high"].includes(action.priority || "")) input.priority = action.priority as "low" | "medium" | "high";
+      if (action.estimatedMinutes !== null) input.estimatedMinutes = action.estimatedMinutes;
+      let task: ReturnType<typeof updateTaskRecord>;
+      try { task = updateTaskRecord(userId, action.targetId, input); }
+      catch (error) {
+        if (error instanceof TaskStoreError && error.status === 404) throw new Error("That record no longer exists in your workspace.");
+        throw error;
+      }
+      return { kind: action.kind, id: task.id, summary: `Updated task “${task.title}”` };
     }
     if (action.kind === "delete_task") {
-      const current = requireOwned(db, "tasks", action.targetId, userId);
-      db.prepare("DELETE FROM tasks WHERE id=? AND user_id=?").run(action.targetId, userId);
-      return { kind: action.kind, id: action.targetId!, summary: `Deleted task “${current.title}”` };
+      if (!action.targetId) throw new Error("Alma could not identify the record to change.");
+      let deleted: ReturnType<typeof deleteTaskRecord>;
+      try { deleted = deleteTaskRecord(userId, action.targetId); }
+      catch (error) {
+        if (error instanceof TaskStoreError && error.status === 404) throw new Error("That record no longer exists in your workspace.");
+        throw error;
+      }
+      return { kind: action.kind, id: deleted.id, summary: `Deleted task “${deleted.title}”` };
     }
     if (action.kind === "create_event") {
       if (!action.title?.trim() || !validDate(action.startAt) || !validDate(action.endAt) || +new Date(action.endAt!) <= +new Date(action.startAt!)) throw new Error("A new event needs a title and valid start/end time.");

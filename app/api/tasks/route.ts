@@ -1,15 +1,31 @@
-import { randomUUID } from "node:crypto";
-import { getDb, seedUser, userIdFromRequest } from "@/lib/db";
+import { userIdFromRequest } from "@/lib/db";
+import { createTask, listTasks, TaskStoreError, type CreateTaskInput } from "@/lib/task-store";
 
 export const runtime = "nodejs";
 
+function failure(error: unknown) {
+  const known = error instanceof TaskStoreError;
+  return Response.json({ error: known ? error.message : "Unable to manage tasks" }, { status: known ? error.status : 500 });
+}
+
+export async function GET(request: Request) {
+  try {
+    const url = new URL(request.url);
+    const status = url.searchParams.get("status");
+    if (status && !["pending", "completed"].includes(status)) return Response.json({ error: "Task status is invalid" }, { status: 400 });
+    const tasks = listTasks(userIdFromRequest(request), {
+      query: url.searchParams.get("query"),
+      status: status as "pending" | "completed" | null,
+      courseId: url.searchParams.get("courseId"),
+      limit: Number(url.searchParams.get("limit") || 50),
+    });
+    return Response.json({ tasks, count: tasks.length });
+  } catch (error) { return failure(error); }
+}
+
 export async function POST(request: Request) {
-  const userId = userIdFromRequest(request); seedUser(userId);
-  const input = await request.json() as { title?: string; description?: string; dueAt?: string | null; courseId?: string | null; priority?: string; estimatedMinutes?: number };
-  if (!input.title?.trim()) return Response.json({ error: "Task title is required" }, { status: 400 });
-  if (input.dueAt && !Number.isFinite(Date.parse(input.dueAt))) return Response.json({ error: "Task deadline is invalid" }, { status: 400 });
-  const id = randomUUID();
-  getDb().prepare("INSERT INTO tasks (id,user_id,course_id,title,description,due_at,status,priority,estimated_minutes) VALUES (?,?,?,?,?,?,'pending',?,?)")
-    .run(id, userId, input.courseId || null, input.title.trim(), input.description || "", input.dueAt ? new Date(input.dueAt).toISOString() : null, input.priority || "medium", Math.max(5, input.estimatedMinutes || 30));
-  return Response.json({ id }, { status: 201 });
+  try {
+    const task = createTask(userIdFromRequest(request), await request.json() as CreateTaskInput);
+    return Response.json({ task }, { status: 201 });
+  } catch (error) { return failure(error); }
 }

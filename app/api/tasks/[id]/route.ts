@@ -1,20 +1,28 @@
-import { getDb, userIdFromRequest } from "@/lib/db";
+import { userIdFromRequest } from "@/lib/db";
+import { deleteTask, getTask, TaskStoreError, updateTask, type UpdateTaskInput } from "@/lib/task-store";
 
 export const runtime = "nodejs";
 
-export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params; const userId = userIdFromRequest(request); const db = getDb();
-  const current = db.prepare("SELECT * FROM tasks WHERE id=? AND user_id=?").get(id, userId) as Record<string, unknown> | undefined;
-  if (!current) return Response.json({ error: "Task not found" }, { status: 404 });
-  const input = await request.json() as { title?: string; description?: string; dueAt?: string | null; status?: string; priority?: string; estimatedMinutes?: number };
-  if (input.dueAt && !Number.isFinite(Date.parse(input.dueAt))) return Response.json({ error: "Task deadline is invalid" }, { status: 400 });
-  db.prepare("UPDATE tasks SET title=?,description=?,due_at=?,status=?,priority=?,estimated_minutes=?,updated_at=? WHERE id=? AND user_id=?")
-    .run(input.title?.trim() || current.title, input.description ?? current.description, input.dueAt === undefined ? current.due_at : input.dueAt ? new Date(input.dueAt).toISOString() : null, input.status ?? current.status, input.priority ?? current.priority, input.estimatedMinutes ?? current.estimated_minutes, new Date().toISOString(), id, userId);
-  return Response.json({ ok: true });
+function failure(error: unknown) {
+  const known = error instanceof TaskStoreError;
+  return Response.json({ error: known ? error.message : "Unable to manage task" }, { status: known ? error.status : 500 });
 }
 
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try { return Response.json({ task: getTask(userIdFromRequest(request), (await params).id) }); }
+  catch (error) { return failure(error); }
+}
+
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const task = updateTask(userIdFromRequest(request), (await params).id, await request.json() as UpdateTaskInput);
+    return Response.json({ task });
+  } catch (error) { return failure(error); }
+}
+
+export const PUT = PATCH;
+
 export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  const result = getDb().prepare("DELETE FROM tasks WHERE id=? AND user_id=?").run(id, userIdFromRequest(request));
-  return Response.json({ ok: result.changes > 0 }, { status: result.changes ? 200 : 404 });
+  try { return Response.json(deleteTask(userIdFromRequest(request), (await params).id)); }
+  catch (error) { return failure(error); }
 }
