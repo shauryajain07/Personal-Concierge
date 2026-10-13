@@ -1,5 +1,5 @@
-import type { AcademicData, Assignment, CalendarEvent, Course, Grade, Note, StudySession, Subtask } from "./types";
-import { getDb, seedUser } from "./db";
+import type { AcademicData, Assignment, CalendarEvent, Course, Grade, Memory, Note, StudySession, Subtask } from "./types";
+import { getDb, ensureUser } from "./db";
 
 export type RetrievalIntent = "answer" | "analyze_assignment" | "rebuild_schedule" | "review_progress";
 
@@ -8,6 +8,7 @@ export type RetrievalPlan = {
   dateRange: { start: string | null; end: string | null };
   courseIds: string[];
   assignmentIds: string[];
+  memoryIds: string[];
   noteQuery: string | null;
   includeGrades: boolean;
   includeHistoricalSemesters: boolean;
@@ -23,6 +24,7 @@ export type CompactAcademicIndex = {
   courses: Array<{ id: string; semesterId: string; code: string; name: string }>;
   assignments: Array<{ id: string; courseId: string; title: string; status: string; dueAt: string; priority: string }>;
   notes: Array<{ id: string; courseId: string | null; title: string; tags: string[]; updatedAt: string }>;
+  memories: Array<{ id: string; title: string; category: Memory["category"] }>;
 };
 
 export type RetrievedAcademicContext = {
@@ -35,6 +37,7 @@ export type RetrievedAcademicContext = {
   courses: Course[];
   assignments: Assignment[];
   notes: Note[];
+  memories: Memory[];
   grades: Grade[];
   events: CalendarEvent[];
   studySessions: StudySession[];
@@ -47,6 +50,7 @@ export type RetrievalMetadata = {
     courses: string[];
     assignments: string[];
     notes: string[];
+    memories: string[];
     grades: string[];
     events: string[];
     studySessions: string[];
@@ -67,6 +71,9 @@ export const RETRIEVAL_LIMITS = {
   assignments: 40,
   notes: 6,
   noteCharacters: 2_000,
+  compactMemories: 100,
+  memories: 8,
+  memoryCharacters: 600,
   assignmentDescriptionCharacters: 1_200,
   grades: 60,
   events: 120,
@@ -103,7 +110,7 @@ function currentSemester(userId: string, now: Date) {
 }
 
 export function getCompactAcademicIndex(userId: string, now = new Date()): { index: CompactAcademicIndex; timezone: string } {
-  seedUser(userId);
+  ensureUser(userId);
   const db = getDb();
   const profile = db.prepare("SELECT timezone,max_daily_minutes as maxDailyMinutes FROM users WHERE id=?").get(userId) as UserProfileRow;
   const semesterRows = db.prepare(
@@ -116,8 +123,11 @@ export function getCompactAcademicIndex(userId: string, now = new Date()): { ind
     "SELECT id,course_id as courseId,title,status,due_at as dueAt,priority FROM assignments WHERE user_id=? ORDER BY due_at LIMIT ?",
   ).all(userId, RETRIEVAL_LIMITS.compactAssignments) as CompactAcademicIndex["assignments"];
   const noteRows = db.prepare(
-    "SELECT id,course_id as courseId,title,tags,updated_at as updatedAt FROM notes WHERE user_id=? ORDER BY pinned DESC,updated_at DESC LIMIT ?",
+    "SELECT id,course_id as courseId,title,tags,updated_at as updatedAt FROM notes WHERE user_id=? AND include_in_context=1 ORDER BY pinned DESC,updated_at DESC LIMIT ?",
   ).all(userId, RETRIEVAL_LIMITS.compactNotes) as Array<Omit<CompactAcademicIndex["notes"][number], "tags"> & { tags: string }>;
+  const memories = db.prepare(
+    "SELECT id,title,category FROM memories WHERE user_id=? AND enabled=1 ORDER BY updated_at DESC LIMIT ?",
+  ).all(userId, RETRIEVAL_LIMITS.compactMemories) as CompactAcademicIndex["memories"];
   const current = currentSemester(userId, now);
   return {
     timezone: profile.timezone,
@@ -127,6 +137,7 @@ export function getCompactAcademicIndex(userId: string, now = new Date()): { ind
       courses: courseRows,
       assignments: assignmentRows,
       notes: noteRows.map((note) => ({ ...note, tags: parseTags(note.tags) })),
+      memories,
     },
   };
 }
@@ -178,12 +189,22 @@ export function fallbackRetrievalPlan({
   const assignmentIds = index.assignments.filter((assignment) => mentions(resolutionText, assignment.title)).map((assignment) => assignment.id);
   const wantsNotes = /\b(note|notes|lecture|study guide|revision|review material)\b/i.test(latestMessage);
   const matchedNote = index.notes.find((note) => mentions(resolutionText, note.title, ...note.tags));
+  const asksAboutMemories = /\b(memory|memories|remember(?:ed)?|my saved|what (?:did|do) i (?:say|tell you)|what do you know about my)\b/i.test(latestMessage)
+    || /\b(my|saved|study) (?:preference|preferences|goal|goals|constraint|constraints)\b/i.test(latestMessage);
+  const memoryIds = index.memories
+    .filter((memory) => mentions(resolutionText, memory.title)
+      || asksAboutMemories
+      || (intent === "rebuild_schedule" && (memory.category === "preference" || memory.category === "constraint"))
+      || (intent === "review_progress" && memory.category === "goal"))
+    .slice(0, RETRIEVAL_LIMITS.memories)
+    .map((memory) => memory.id);
   const historical = /\b((last|previous|past)\s+(semester|term|year|course)|historical|history|trend|prerequisite|degree plan|four years?|4 years?|all semesters?|over time|changed)\b/i.test(latestMessage);
   return {
     intent,
     dateRange: { start: start.toISOString(), end: end.toISOString() },
     courseIds: unique(courseIds),
     assignmentIds: unique(assignmentIds),
+    memoryIds,
     noteQuery: wantsNotes ? matchedNote?.title || latestMessage.slice(0, 160) : null,
     includeGrades: intent === "review_progress" || /\b(grade|gpa|score|performance|standing|prioriti[sz])\b/i.test(latestMessage),
     includeHistoricalSemesters: historical,
@@ -204,6 +225,7 @@ export function sanitizeRetrievalPlan(
 ): RetrievalPlan {
   const validCourseIds = new Set(index.courses.map((course) => course.id));
   const validAssignmentIds = new Set(index.assignments.map((assignment) => assignment.id));
+  const validMemoryIds = new Set(index.memories.map((memory) => memory.id));
   const intent: RetrievalIntent = ["answer", "analyze_assignment", "rebuild_schedule", "review_progress"].includes(raw.intent)
     ? raw.intent
     : "answer";
@@ -221,6 +243,7 @@ export function sanitizeRetrievalPlan(
     dateRange: { start: start.toISOString(), end: end.toISOString() },
     courseIds: unique((raw.courseIds || []).filter((id) => validCourseIds.has(id))).slice(0, 20),
     assignmentIds: unique((raw.assignmentIds || []).filter((id) => validAssignmentIds.has(id))).slice(0, 30),
+    memoryIds: unique((raw.memoryIds || []).filter((id) => validMemoryIds.has(id))).slice(0, RETRIEVAL_LIMITS.memories),
     noteQuery: typeof raw.noteQuery === "string" && raw.noteQuery.trim() ? raw.noteQuery.trim().slice(0, 200) : null,
     includeGrades: Boolean(raw.includeGrades),
     includeHistoricalSemesters: Boolean(raw.includeHistoricalSemesters),
@@ -299,7 +322,7 @@ export function getRelevantCourses(
   includeHistoricalSemesters = false,
   now = new Date(),
 ) {
-  seedUser(userId);
+  ensureUser(userId);
   const current = currentSemester(userId, now);
   const validIds = unique(courseIds).slice(0, RETRIEVAL_LIMITS.courses);
   return selectCourses(
@@ -309,6 +332,7 @@ export function getRelevantCourses(
       dateRange: { start: null, end: null },
       courseIds: validIds,
       assignmentIds: [],
+      memoryIds: [],
       noteQuery: null,
       includeGrades: false,
       includeHistoricalSemesters,
@@ -341,9 +365,19 @@ function selectNotes(userId: string, plan: RetrievalPlan) {
   }
   params.push(RETRIEVAL_LIMITS.notes);
   const rows = db.prepare(
-    `SELECT id,course_id as courseId,title,substr(content,1,${RETRIEVAL_LIMITS.noteCharacters}) as content,tags,pinned,created_at as createdAt,updated_at as updatedAt FROM notes WHERE user_id=? AND (${conditions.join(" OR ")}) ORDER BY pinned DESC,updated_at DESC LIMIT ?`,
+    `SELECT id,course_id as courseId,title,substr(content,1,${RETRIEVAL_LIMITS.noteCharacters}) as content,tags,pinned,include_in_context as includeInContext,created_at as createdAt,updated_at as updatedAt FROM notes WHERE user_id=? AND include_in_context=1 AND (${conditions.join(" OR ")}) ORDER BY pinned DESC,updated_at DESC LIMIT ?`,
   ).all(...params) as Array<Omit<Note, "tags" | "pinned"> & { tags: string; pinned: number }>;
-  return rows.map((note) => ({ ...note, tags: parseTags(note.tags), pinned: Boolean(note.pinned) }));
+  return rows.map((note) => ({ ...note, tags: parseTags(note.tags), pinned: Boolean(note.pinned), includeInContext: Boolean(note.includeInContext) }));
+}
+
+function selectMemories(userId: string, plan: RetrievalPlan) {
+  const ids = unique(plan.memoryIds || []).slice(0, RETRIEVAL_LIMITS.memories);
+  if (!ids.length) return [];
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT id,title,substr(content,1,${RETRIEVAL_LIMITS.memoryCharacters}) as content,category,enabled,created_at as createdAt,updated_at as updatedAt FROM memories WHERE user_id=? AND enabled=1 AND id IN (${placeholders(ids)}) ORDER BY updated_at DESC LIMIT ?`,
+  ).all(userId, ...ids, RETRIEVAL_LIMITS.memories) as Array<Omit<Memory, "enabled"> & { enabled: number }>;
+  return rows.map((memory) => ({ ...memory, enabled: Boolean(memory.enabled) }));
 }
 
 function selectGrades(userId: string, plan: RetrievalPlan, currentSemesterId: string | null) {
@@ -387,7 +421,7 @@ function selectSemesters(userId: string, includeHistorical: boolean) {
 }
 
 export function retrieveAcademicContext(userId: string, plan: RetrievalPlan, now = new Date()): RetrievedAcademicContext {
-  seedUser(userId);
+  ensureUser(userId);
   const db = getDb();
   const profileRow = db.prepare("SELECT timezone,max_daily_minutes as maxDailyMinutes FROM users WHERE id=?").get(userId) as UserProfileRow;
   const current = currentSemester(userId, now) || null;
@@ -400,6 +434,7 @@ export function retrieveAcademicContext(userId: string, plan: RetrievalPlan, now
     courses,
     assignments,
     notes: selectNotes(userId, plan),
+    memories: selectMemories(userId, plan),
     grades: selectGrades(userId, plan, current?.id || null),
     events: selectEvents(userId, plan, range),
     studySessions: selectStudySessions(userId, plan, range),
@@ -414,6 +449,7 @@ export function buildRetrievalMetadata(plan: RetrievalPlan, context: RetrievedAc
       courses: context.courses.map((course) => course.id),
       assignments: context.assignments.map((assignment) => assignment.id),
       notes: context.notes.map((note) => note.id),
+      memories: context.memories.map((memory) => memory.id),
       grades: context.grades.map((grade) => grade.id),
       events: context.events.map((event) => event.id),
       studySessions: context.studySessions.map((session) => session.id),
@@ -424,6 +460,7 @@ export function buildRetrievalMetadata(plan: RetrievalPlan, context: RetrievedAc
       courses: context.courses.length,
       assignments: context.assignments.length,
       notes: context.notes.length,
+      memories: context.memories.length,
       grades: context.grades.length,
       events: context.events.length,
       studySessions: context.studySessions.length,

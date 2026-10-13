@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { getDb, seedUser, userIdFromRequest } from "@/lib/db";
+import { getDb, ensureUser, userIdFromRequest } from "@/lib/db";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const userId=userIdFromRequest(request);seedUser(userId);
+  const userId=userIdFromRequest(request);ensureUser(userId);
   const input=await request.json() as {courseId?:string;title?:string;description?:string;dueAt?:string;priority?:string;estimatedMinutes?:number;subtasks?:Array<{title:string;estimatedMinutes:number}>};
   if(!input.title?.trim()||!input.courseId||!input.dueAt)return Response.json({error:"Course, title, and deadline are required"},{status:400});
   const id=randomUUID(); const db=getDb();

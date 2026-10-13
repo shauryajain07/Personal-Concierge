@@ -52,6 +52,17 @@ export type Note = {
   content: string;
   tags: string[];
   pinned: boolean;
+  includeInContext: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type Memory = {
+  id: string;
+  title: string;
+  content: string;
+  category: "preference" | "goal" | "constraint" | "other";
+  enabled: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -93,6 +104,7 @@ export type AcademicData = {
   assignments: Assignment[];
   tasks: Task[];
   notes: Note[];
+  memories: Memory[];
   grades: Grade[];
   events: CalendarEvent[];
   studySessions: StudySession[];

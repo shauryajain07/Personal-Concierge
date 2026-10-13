@@ -121,7 +121,7 @@ export const assignmentSchema: JsonSchema = {
 export const retrievalPlanSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["intent", "dateRange", "courseIds", "assignmentIds", "noteQuery", "includeGrades", "includeHistoricalSemesters", "conversationMessageCount", "reason"],
+  required: ["intent", "dateRange", "courseIds", "assignmentIds", "memoryIds", "noteQuery", "includeGrades", "includeHistoricalSemesters", "conversationMessageCount", "reason"],
   properties: {
     intent: { type: "string", enum: ["answer", "analyze_assignment", "rebuild_schedule", "review_progress"] },
     dateRange: {
@@ -135,6 +135,7 @@ export const retrievalPlanSchema: JsonSchema = {
     },
     courseIds: { type: "array", items: { type: "string" } },
     assignmentIds: { type: "array", items: { type: "string" } },
+    memoryIds: { type: "array", items: { type: "string" } },
     noteQuery: { type: ["string", "null"] },
     includeGrades: { type: "boolean" },
     includeHistoricalSemesters: { type: "boolean" },

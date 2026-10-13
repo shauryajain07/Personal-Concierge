@@ -54,7 +54,7 @@ export function codexSessionIdFromRequest(request: Request) {
 
 export function codexSessionHome(sessionId: string) {
   if (!validCodexSessionId(sessionId)) throw new Error("Invalid Codex session");
-  return join(process.cwd(), "data/codex-sessions", sessionId);
+  return join(/*turbopackIgnore: true*/ process.cwd(), "data/codex-sessions", sessionId);
 }
 
 export function codexEnvironment(sessionId: string): Record<string, string> & NodeJS.ProcessEnv {

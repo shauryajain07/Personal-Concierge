@@ -51,7 +51,8 @@ export async function planAcademicRetrieval({
       system: [
         "Plan the smallest safe academic-data retrieval needed to answer the latest student request.",
         "Return only IDs present in the compact index. Never invent IDs.",
-        "The compact index is metadata only; request notes, grades, history, assignments, and dates only when relevant.",
+        "The compact index is metadata only; request notes, saved memories, grades, history, assignments, and dates only when relevant.",
+        "Select saved memory IDs only when their title and category are relevant. Include saved preferences and constraints for schedule rebuilding, and relevant goals for progress questions.",
         "Use conversationMessageCount to retain the fewest supplied recent messages needed to resolve a follow-up.",
         "Use includeGrades only for grades, progress, performance, or prioritization.",
         "Use includeHistoricalSemesters only for explicit historical, prerequisite, trend, or long-term degree questions.",
@@ -80,6 +81,7 @@ export async function planAcademicRetrieval({
   const deterministicMatches = fallback();
   plan.courseIds = [...new Set([...plan.courseIds, ...deterministicMatches.courseIds])].slice(0, 20);
   plan.assignmentIds = [...new Set([...plan.assignmentIds, ...deterministicMatches.assignmentIds])].slice(0, 30);
+  plan.memoryIds = [...new Set([...plan.memoryIds, ...deterministicMatches.memoryIds])].slice(0, 8);
   const requestText = `${plannerHistory.map((item) => item.text).join(" ")} ${latestMessage}`;
   const historicalRequest = /\b((last|previous|past)\s+(semester|term|year|course)|historical|history|prerequisite|degree plan|four years?|4 years?|all semesters?|over time|trend|changed)\b/i.test(requestText);
   plan.includeHistoricalSemesters = historicalRequest;
@@ -90,5 +92,7 @@ export async function planAcademicRetrieval({
 }
 
 export function compactIndexContainsNoPrivateBodies(index: CompactAcademicIndex) {
-  return index.notes.every((note) => !("content" in note)) && index.assignments.every((assignment) => !("description" in assignment));
+  return index.notes.every((note) => !("content" in note))
+    && index.assignments.every((assignment) => !("description" in assignment))
+    && index.memories.every((memory) => !("content" in memory));
 }

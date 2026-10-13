@@ -1,4 +1,4 @@
-import { getDb, seedUser } from "./db";
+import { getDb, ensureUser } from "./db";
 import type { StudySession } from "./types";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -13,7 +13,7 @@ export function istDayRange(date: string) {
 }
 
 export function listFocusSessions(userId: string, options: { date?: string | null; assignmentId?: string | null } = {}) {
-  seedUser(userId);
+  ensureUser(userId);
   const clauses = ["user_id=?"];
   const values: string[] = [userId];
   if (options.date) {
@@ -26,7 +26,7 @@ export function listFocusSessions(userId: string, options: { date?: string | nul
 }
 
 export function clearFocusSessionsForDate(userId: string, date: string) {
-  seedUser(userId);
+  ensureUser(userId);
   const range = istDayRange(date);
   const sessions = listFocusSessions(userId, { date }).filter((session) => session.status === "planned");
   const result = getDb().prepare("DELETE FROM study_sessions WHERE user_id=? AND status='planned' AND start_at<? AND end_at>?")

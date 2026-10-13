@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after } from "node:test";
+import test, { after, beforeEach } from "node:test";
 
 const directory = mkdtempSync(join(tmpdir(), "alma-test-"));
 process.chdir(directory);
@@ -31,21 +31,82 @@ const { DELETE: deleteAssignmentRecord } = await import("../app/api/assignments/
 const { POST: createNote } = await import("../app/api/notes/route");
 const { GET: listTaskRecords, POST: createTaskRecord } = await import("../app/api/tasks/route");
 const { GET: getTaskRecord, PATCH: updateTaskRecord, DELETE: deleteTaskRecord } = await import("../app/api/tasks/[id]/route");
-const { GET: listFocusSessionRecords, DELETE: clearFocusSessionRecords } = await import("../app/api/study-sessions/route");
+const { GET: listFocusSessionRecords, PATCH: completeFocusSessionRecord, DELETE: clearFocusSessionRecords } = await import("../app/api/study-sessions/route");
 const { POST: applyPlannerChanges } = await import("../app/api/planner/apply/route");
 const { POST: askPlanner } = await import("../app/api/planner/route");
 const { POST: analyzeAssignment } = await import("../app/api/assignments/analyze/route");
+const { POST: createSemester } = await import("../app/api/semesters/route");
+const { POST: createCourse } = await import("../app/api/courses/route");
 
 after(() => rmSync(directory, { recursive: true, force: true }));
 
-test("creates the complete four-year academic structure", () => {
-  const data = getAcademicData("student-test");
-  assert.equal(data.semesters.length, 8);
-  assert.equal(data.courses.length, 4);
-  assert.equal(data.assignments.length, 4);
-  assert.ok(data.assignments[0].subtasks?.length);
-  assert.equal(data.notes.length, 2);
-  assert.equal(data.grades.length, 4);
+function createAcademicTestRecords() {
+  const db = getDb();
+  getAcademicData("student-test");
+  const start = new Date();
+  start.setDate(start.getDate() - 30);
+  const end = new Date();
+  end.setDate(end.getDate() + 180);
+  db.prepare("INSERT OR IGNORE INTO semesters (id,user_id,name,number,start_date,end_date) VALUES (?,?,?,?,?,?)")
+    .run("sem-3", "student-test", "Test semester", 1, start.toISOString().slice(0, 10), end.toISOString().slice(0, 10));
+  const courses = [
+    ["course-phy", "PHY 204", "Modern Physics", "#0066cc"],
+    ["course-eco", "ECO 202", "Macroeconomics", "#c75032"],
+    ["course-mat", "MAT 212", "Linear Algebra", "#248a3d"],
+    ["course-cs", "CS 231", "Data Structures", "#5e5ce6"],
+  ];
+  const insertCourse = db.prepare("INSERT OR IGNORE INTO courses (id,user_id,semester_id,code,name,color,credits,progress) VALUES (?,?,?,?,?,?,3,0)");
+  for (const course of courses) insertCourse.run(course[0], "student-test", "sem-3", course[1], course[2], course[3]);
+  const due = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+  const assignments = [
+    ["asg-phy", "course-phy", "Quantum Mechanics Test", "Review wave functions, operators, and uncertainty principle.", 3, "high", 260, 46],
+    ["asg-eco", "course-eco", "Policy Analysis Essay", "2,000-word monetary policy analysis with four academic sources.", 6, "high", 420, 28],
+    ["asg-mat", "course-mat", "Problem Set 6", "Eigenvalues and diagonalization problems.", 8, "medium", 120, 0],
+    ["asg-cs", "course-cs", "Graph Algorithms Lab", "Implement a graph algorithm.", 9, "medium", 255, 0],
+  ];
+  const insertAssignment = db.prepare("INSERT OR IGNORE INTO assignments (id,user_id,course_id,title,description,due_at,status,priority,estimated_minutes,progress) VALUES (?,?,?,?,?,?,'in_progress',?,?,?)");
+  for (const item of assignments) insertAssignment.run(item[0], "student-test", item[1], item[2], item[3], due(item[4] as number), item[5], item[6], item[7]);
+  db.prepare("INSERT OR IGNORE INTO subtasks (id,user_id,assignment_id,title,estimated_minutes,status,position) VALUES (?,?,?,?,?,'pending',0)")
+    .run("sub-1", "student-test", "asg-phy", "Review notes", 60);
+  db.prepare("INSERT OR IGNORE INTO notes (id,user_id,course_id,title,content,tags) VALUES (?,?,?,?,?,?)")
+    .run("note-1", "student-test", "course-phy", "Physics review", "uncertainty principle", "[]");
+  db.prepare("INSERT OR IGNORE INTO notes (id,user_id,course_id,title,content,tags) VALUES (?,?,?,?,?,?)")
+    .run("note-2", "student-test", "course-eco", "Economics research", "2,000-word monetary policy", "[]");
+  db.prepare("INSERT OR IGNORE INTO grades (id,user_id,course_id,title,score,max_score,weight) VALUES (?,?,?,?,?,?,?)")
+    .run("g1", "student-test", "course-phy", "Midterm", 84, 100, 30);
+}
+
+beforeEach(createAcademicTestRecords);
+
+test("new workspaces contain no sample academic records", () => {
+  const data = getAcademicData("empty-student");
+  assert.equal(data.semesters.length, 0);
+  assert.equal(data.courses.length, 0);
+  assert.equal(data.assignments.length, 0);
+  assert.equal(data.tasks.length, 0);
+  assert.equal(data.notes.length, 0);
+  assert.equal(data.grades.length, 0);
+  assert.equal(data.events.length, 0);
+  assert.equal(data.studySessions.length, 0);
+  assert.equal(data.memories.length, 0);
+});
+
+test("a new student can create a real term and course", async () => {
+  const headers = { "content-type": "application/json", "x-alma-user": "setup-student" };
+  const empty = getAcademicData("setup-student");
+  assert.equal(empty.courses.length, 0);
+  const semesterResponse = await createSemester(new Request("http://alma.test/api/semesters", {
+    method: "POST", headers,
+    body: JSON.stringify({ name: "Autumn term", startDate: "2026-09-01", endDate: "2026-12-20" }),
+  }));
+  assert.equal(semesterResponse.status, 201);
+  const semester = (await semesterResponse.json()).semester;
+  const courseResponse = await createCourse(new Request("http://alma.test/api/courses", {
+    method: "POST", headers,
+    body: JSON.stringify({ semesterId: semester.id, name: "Real Course", code: "REAL 101" }),
+  }));
+  assert.equal(courseResponse.status, 201);
+  assert.equal(getAcademicData("setup-student").courses[0].name, "Real Course");
 });
 
 test("persists notes in the SQL database", () => {
@@ -109,6 +170,24 @@ test("calendar focus-session API lists and clears planned work by India calendar
   assert.ok(db.prepare("SELECT id FROM study_sessions WHERE id=?").get("date-keep-session"));
 });
 
+test("completing a focus session logs its time once and stays user-scoped", async () => {
+  const db = getDb();
+  db.prepare("INSERT INTO study_sessions (id,user_id,assignment_id,title,start_at,end_at,status,plan_id) VALUES (?,?,?,?,?,?,'planned',?)")
+    .run("focus-complete-session", "student-test", "asg-phy", "Review notes", "2026-10-13T01:00:00.000Z", "2026-10-13T01:50:00.000Z", "focus-complete-plan");
+  const headers = { "content-type": "application/json", "x-alma-user": "student-test" };
+  const request = () => new Request("http://alma.test/api/study-sessions", { method: "PATCH", headers, body: JSON.stringify({ id: "focus-complete-session" }) });
+  const response = await completeFocusSessionRecord(request());
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).minutes, 50);
+  await completeFocusSessionRecord(request());
+  assert.equal(db.prepare("SELECT actual_minutes AS minutes FROM assignments WHERE id='asg-phy'").get().minutes, 50);
+
+  const otherUser = await completeFocusSessionRecord(new Request("http://alma.test/api/study-sessions", {
+    method: "PATCH", headers: { ...headers, "x-alma-user": "other-student" }, body: JSON.stringify({ id: "focus-complete-session" }),
+  }));
+  assert.equal(otherUser.status, 404);
+});
+
 test("builds conflict-free sessions before assignment deadlines", () => {
   const data = getAcademicData("student-test");
   const plan = buildSchedule(data);
@@ -122,8 +201,9 @@ test("builds conflict-free sessions before assignment deadlines", () => {
       assert.equal(overlap, false);
     }
   }
+  const existingSessions = data.studySessions.length;
   applySchedule("student-test", plan.slice(0, 2), "plan-test");
-  assert.equal(getAcademicData("student-test").studySessions.length, 2);
+  assert.equal(getAcademicData("student-test").studySessions.length, existingSessions + 2);
 });
 
 test("honors requested study-hour and session-length constraints", () => {
@@ -155,6 +235,7 @@ test("one-course retrieval excludes unrelated courses and notes", () => {
     dateRange: { start: now.toISOString(), end: new Date(+now + 30 * 86_400_000).toISOString() },
     courseIds: ["course-phy"],
     assignmentIds: [],
+    memoryIds: [],
     noteQuery: "quantum wave functions",
     includeGrades: false,
     includeHistoricalSemesters: false,
@@ -184,6 +265,7 @@ test("schedule retrieval is bounded to incomplete work and commitments in its wi
     dateRange: { start: now.toISOString(), end: end.toISOString() },
     courseIds: [],
     assignmentIds: [],
+    memoryIds: [],
     noteQuery: null,
     includeGrades: false,
     includeHistoricalSemesters: false,
@@ -203,6 +285,7 @@ test("grade retrieval includes scoped grades only when requested", () => {
     dateRange: { start: now.toISOString(), end: new Date(+now + 30 * 86_400_000).toISOString() },
     courseIds: ["course-phy"],
     assignmentIds: [],
+    memoryIds: [],
     noteQuery: null,
     includeGrades: true,
     includeHistoricalSemesters: false,

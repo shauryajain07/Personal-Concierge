@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { getDb, seedUser } from "./db";
+import { getDb, ensureUser } from "./db";
 import type { Task } from "./types";
 
 export type TaskQuery = {
@@ -45,7 +45,7 @@ function validateCourse(userId: string, courseId: string | null | undefined) {
 }
 
 export function listTasks(userId: string, filters: TaskQuery = {}) {
-  seedUser(userId);
+  ensureUser(userId);
   const clauses = ["user_id=?"];
   const values: Array<string | number> = [userId];
   if (filters.status) { clauses.push("status=?"); values.push(filters.status); }
@@ -62,14 +62,14 @@ export function listTasks(userId: string, filters: TaskQuery = {}) {
 }
 
 export function getTask(userId: string, id: string) {
-  seedUser(userId);
+  ensureUser(userId);
   const task = taskRow(userId, id);
   if (!task) throw new TaskStoreError("Task not found", 404);
   return task;
 }
 
 export function createTask(userId: string, input: CreateTaskInput) {
-  seedUser(userId);
+  ensureUser(userId);
   const title = input.title?.trim();
   if (!title) throw new TaskStoreError("Task title is required", 400);
   if (!validDate(input.dueAt)) throw new TaskStoreError("Task deadline is invalid", 400);

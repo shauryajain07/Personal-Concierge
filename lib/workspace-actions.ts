@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { codexJson, workspaceActionSchema } from "./codex";
-import { getAcademicData, getDb, seedUser } from "./db";
+import { getAcademicData, getDb, ensureUser } from "./db";
 import { createTask as createTaskRecord, deleteTask as deleteTaskRecord, TaskStoreError, updateTask as updateTaskRecord, type UpdateTaskInput } from "./task-store";
 import type { ConversationMessage } from "./retrieval";
 
@@ -164,7 +164,7 @@ function optionalCourse(db: ReturnType<typeof getDb>, courseId: string | null, u
 }
 
 export function applyWorkspaceActions(userId: string, actions: WorkspaceAction[]): AppliedWorkspaceAction[] {
-  seedUser(userId);
+  ensureUser(userId);
   const db = getDb();
   if (!Array.isArray(actions) || !actions.length) return [];
   if (actions.length > 10) throw new Error("Please make at most 10 changes at once.");

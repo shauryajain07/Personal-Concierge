@@ -1,10 +1,10 @@
-import { getDb, seedUser } from "./db";
+import { getDb, ensureUser } from "./db";
 import type { Assignment } from "./types";
 
 const assignmentColumns = "id,course_id as courseId,title,description,due_at as dueAt,status,priority,estimated_minutes as estimatedMinutes,actual_minutes as actualMinutes,progress,created_at as createdAt";
 
 export function listAssignments(userId: string, query?: string | null, limit = 50) {
-  seedUser(userId);
+  ensureUser(userId);
   const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.trunc(limit))) : 50;
   if (!query?.trim()) {
     return getDb().prepare(`SELECT ${assignmentColumns} FROM assignments WHERE user_id=? ORDER BY due_at LIMIT ?`).all(userId, safeLimit) as Assignment[];
@@ -15,7 +15,7 @@ export function listAssignments(userId: string, query?: string | null, limit = 5
 }
 
 export function getAssignment(userId: string, id: string) {
-  seedUser(userId);
+  ensureUser(userId);
   const assignment = getDb().prepare(`SELECT ${assignmentColumns} FROM assignments WHERE id=? AND user_id=?`).get(id, userId) as Assignment | undefined;
   if (!assignment) throw new Error("Assignment not found");
   return assignment;
